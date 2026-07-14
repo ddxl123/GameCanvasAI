@@ -1,0 +1,571 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Press+Start+2P&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: dark light;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* ===== 暗色主题（默认） ===== */
+  --color-canvas: 14 21 37;          /* #0E1525 */
+  --color-canvas-elevated: 26 34 53;  /* #1A2235 */
+  --color-canvas-sunken: 10 15 28;    /* #0A0F1C */
+  --color-line: 42 53 72;            /* #2A3548 */
+  --color-line-subtle: 31 40 57;     /* #1F2839 */
+  --color-line-strong: 58 74 102;    /* #3A4A66 */
+  --color-accent: 163 230 53;        /* #A3E635 */
+  --color-accent-hover: 190 242 100; /* #BEF264 */
+  --color-accent-muted: 132 204 22;  /* #84CC16 */
+  --color-warn: 251 146 60;          /* #FB923C */
+  --color-warn-muted: 194 65 12;     /* #C2410C */
+  --color-danger: 248 113 113;       /* #F87171 */
+  --color-danger-muted: 185 28 28;   /* #B91C1C */
+  --color-ink-primary: 230 234 242;  /* #E6EAF2 */
+  --color-ink-secondary: 154 165 184;/* #9AA5B8 */
+  --color-ink-muted: 92 102 120;     /* #5C6678 */
+}
+
+/* ===== 亮色主题覆盖 ===== */
+.light {
+  color-scheme: light;
+
+  --color-canvas: 248 249 252;        /* #F8F9FC */
+  --color-canvas-elevated: 255 255 255; /* #FFFFFF */
+  --color-canvas-sunken: 240 242 246;   /* #F0F2F6 */
+  --color-line: 203 208 218;           /* #CBD0DA */
+  --color-line-subtle: 225 228 235;    /* #E1E4EB */
+  --color-line-strong: 168 175 190;    /* #A8AFBE */
+  --color-accent: 132 204 22;          /* #84CC16 - 稍暗以适应亮色背景 */
+  --color-accent-hover: 101 163 13;    /* #65A30D */
+  --color-accent-muted: 101 163 13;    /* #65A30D */
+  --color-warn: 234 88 12;             /* #EA580C */
+  --color-warn-muted: 154 52 18;       /* #9A3412 */
+  --color-danger: 220 38 38;           /* #DC2626 */
+  --color-danger-muted: 153 27 27;     /* #991B1B */
+  --color-ink-primary: 30 32 40;       /* #1E2028 */
+  --color-ink-secondary: 71 78 92;     /* #474E5C */
+  --color-ink-muted: 130 138 150;      /* #828A96 */
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: rgb(var(--color-canvas-sunken));
+  color: rgb(var(--color-ink-primary));
+}
+
+/* ===== 游戏感字体 ===== */
+.font-pixel {
+  font-family: "Press Start 2P", monospace;
+  letter-spacing: 0.05em;
+}
+
+.font-display {
+  font-family: "Space Grotesk", sans-serif;
+}
+
+/* ===== 游戏感动效 ===== */
+
+/* 霓虹脉冲 */
+@keyframes neon-pulse {
+  0%, 100% {
+    box-shadow: 0 0 20px rgb(var(--color-accent) / 0.3), 0 0 40px rgb(var(--color-accent) / 0.1);
+  }
+  50% {
+    box-shadow: 0 0 30px rgb(var(--color-accent) / 0.5), 0 0 60px rgb(var(--color-accent) / 0.2);
+  }
+}
+.animate-neon-pulse {
+  animation: neon-pulse 3s ease-in-out infinite;
+}
+
+/* 扫描线 */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+.scanline::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgb(var(--color-accent) / 0.04) 50%,
+    transparent 100%
+  );
+  pointer-events: none;
+  animation: scanline 8s linear infinite;
+}
+
+/* 渐变流动 */
+@keyframes gradient-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+.animate-gradient {
+  background-size: 200% 200%;
+  animation: gradient-shift 6s ease infinite;
+}
+
+/* 浮动 */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+}
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+/* 闪烁光标 */
+@keyframes blink-cursor {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.blink-cursor::after {
+  content: "_";
+  animation: blink-cursor 1s step-end infinite;
+  color: rgb(var(--color-accent));
+}
+
+/* 网格背景流动 */
+@keyframes grid-flow {
+  0% { background-position: 0 0; }
+  100% { background-position: 40px 40px; }
+}
+.bg-grid-game {
+  background-image:
+    linear-gradient(rgb(var(--color-accent) / 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--color-accent) / 0.06) 1px, transparent 1px);
+  background-size: 40px 40px;
+  animation: grid-flow 20s linear infinite;
+}
+
+/* 设计反馈动效 */
+.fx-shake { animation: shake 0.3s ease-in-out; }
+.fx-flash-success { animation: flash-bg 0.6s ease-out; }
+.fx-flash-error { animation: flash-error 0.5s ease-out; }
+.fx-bounce-in { animation: bounce-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.fx-glow-pulse { animation: glow-pulse 0.8s ease-out; }
+
+/* 全息光晕 */
+.holo-glow {
+  position: relative;
+}
+.holo-glow::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  padding: 2px;
+  background: linear-gradient(135deg, #a3e635, #22d3ee, #a78bfa, #f472b6, #a3e635);
+  background-size: 300% 300%;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0.6;
+  animation: gradient-shift 4s ease infinite;
+  pointer-events: none;
+}
+
+/* 文字渐变 */
+.text-gradient-game {
+  background: linear-gradient(90deg, #a3e635, #22d3ee, #a78bfa, #f472b6);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: gradient-shift 6s ease infinite;
+}
+
+/* 像素角标 */
+.pixel-corner {
+  clip-path: polygon(
+    0 4px, 4px 4px, 4px 0,
+    calc(100% - 4px) 0, calc(100% - 4px) 4px, 100% 4px,
+    100% calc(100% - 4px), calc(100% - 4px) calc(100% - 4px), calc(100% - 4px) 100%,
+    4px 100%, 4px calc(100% - 4px), 0 calc(100% - 4px)
+  );
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--color-line));
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--color-line-strong));
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+/* 选中文本颜色 */
+::selection {
+  background: rgb(var(--color-accent) / 0.3);
+  color: rgb(var(--color-ink-primary));
+}
+
+/* 焦点轮廓 */
+:focus-visible {
+  outline: 2px solid rgb(var(--color-accent));
+  outline-offset: 2px;
+}
+
+/* React Flow 主题覆盖 */
+.react-flow__background {
+  background-color: rgb(var(--color-canvas-sunken));
+}
+
+.react-flow__attribution {
+  background: transparent !important;
+  color: rgb(var(--color-ink-muted)) !important;
+}
+
+.react-flow__controls {
+  background: rgb(var(--color-canvas-elevated));
+  border: 1px solid rgb(var(--color-line));
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: rgb(var(--color-canvas-elevated));
+  border-bottom: 1px solid rgb(var(--color-line));
+  color: rgb(var(--color-ink-secondary));
+  fill: rgb(var(--color-ink-secondary));
+}
+
+.react-flow__controls-button:hover {
+  background: rgb(var(--color-line));
+}
+
+.react-flow__minimap {
+  background: rgb(var(--color-canvas-elevated) / 0.85) !important;
+  border: 1px solid rgb(var(--color-line-subtle));
+  border-radius: 10px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+}
+
+/* ===== 磨砂卡片+层级阴影 设计系统 ===== */
+
+/* 磨砂质感卡片：半透明 + 背景模糊 + 细边框 */
+.frosted {
+  background: rgb(var(--color-canvas-elevated) / 0.72);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid rgb(var(--color-line-subtle) / 0.8);
+}
+
+/* 磨砂面板（更深一层，用于浮层/工具栏） */
+.frosted-panel {
+  background: rgb(var(--color-canvas-elevated) / 0.85);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgb(var(--color-line-subtle));
+}
+
+/* 层级阴影：多层叠加营造深度，避免单层硬阴影 */
+.shadow-layered {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    0 4px 12px rgba(0, 0, 0, 0.18),
+    0 12px 32px rgba(0, 0, 0, 0.12);
+}
+
+.shadow-layered-lg {
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.22),
+    0 8px 24px rgba(0, 0, 0, 0.24),
+    0 24px 56px rgba(0, 0, 0, 0.16);
+}
+
+/* 选中态柔光（非刺眼霓虹，而是柔和光晕） */
+.shadow-selected {
+  box-shadow:
+    0 0 0 1px rgb(var(--color-accent) / 0.5),
+    0 4px 16px rgb(var(--color-accent) / 0.12),
+    0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+/* hover 态微抬升 */
+.shadow-hover {
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.22),
+    0 8px 20px rgba(0, 0, 0, 0.16);
+}
+
+/* 顶部色带 + 左侧色条：双重颜色边界，让相同颜色节点一眼可辨 */
+.color-band-top {
+  position: relative;
+}
+.color-band-top::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 4px;
+  background: var(--band-color);
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 1;
+}
+.color-band-top::after {
+  content: "";
+  position: absolute;
+  inset: 4px 0 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--band-color), transparent);
+  border-radius: 0 2px 2px 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 画布环境光：柔和径向渐变，增加深度而不喧宾夺主 */
+.canvas-ambient {
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 10%, rgb(var(--color-accent) / 0.04), transparent 60%),
+    radial-gradient(ellipse 70% 50% at 85% 90%, rgb(99 102 241 / 0.05), transparent 60%),
+    rgb(var(--color-canvas-sunken));
+}
+
+/* TipTap 编辑器样式 */
+.ProseMirror {
+  outline: none;
+  min-height: 100%;
+}
+
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: rgb(var(--color-ink-muted));
+  pointer-events: none;
+  height: 0;
+}
+
+.ProseMirror .is-empty::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: rgb(var(--color-ink-muted));
+  pointer-events: none;
+  height: 0;
+}
+
+/* TipTap 内容基础排版 */
+.tiptap-content .ProseMirror {
+  color: rgb(var(--color-ink-primary));
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+
+.tiptap-content .ProseMirror p {
+  margin: 0.25rem 0;
+}
+
+.tiptap-content .ProseMirror ul,
+.tiptap-content .ProseMirror ol {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+}
+
+.tiptap-content .ProseMirror ul {
+  list-style: disc;
+}
+
+.tiptap-content .ProseMirror ol {
+  list-style: decimal;
+}
+
+.tiptap-content .ProseMirror li {
+  margin: 0.15rem 0;
+}
+
+.tiptap-content .ProseMirror blockquote {
+  border-left: 2px solid rgb(var(--color-accent));
+  padding-left: 0.75rem;
+  margin: 0.5rem 0;
+  color: rgb(var(--color-ink-secondary));
+  font-style: italic;
+}
+
+.tiptap-content .ProseMirror code {
+  background: rgb(var(--color-canvas-elevated));
+  border: 1px solid rgb(var(--color-line));
+  border-radius: 3px;
+  padding: 0.1rem 0.3rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8em;
+  color: rgb(var(--color-accent));
+}
+
+.tiptap-content .ProseMirror pre {
+  background: rgb(var(--color-canvas-elevated));
+  border: 1px solid rgb(var(--color-line));
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+
+.tiptap-content .ProseMirror pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: rgb(var(--color-ink-primary));
+}
+
+.tiptap-content .ProseMirror strong {
+  color: rgb(var(--color-ink-primary));
+  font-weight: 600;
+}
+
+.tiptap-content .ProseMirror em {
+  font-style: italic;
+}
+
+.tiptap-content .ProseMirror p:first-child {
+  margin-top: 0;
+}
+
+.tiptap-content .ProseMirror p:last-child {
+  margin-bottom: 0;
+}
+
+/* 通用工具类 */
+@layer components {
+  .surface-card {
+    @apply bg-canvas-elevated border border-line rounded-lg;
+  }
+
+  /* Markdown 渲染样式 */
+  .markdown-body h1 {
+    @apply font-display text-lg font-bold text-ink-primary mt-3 mb-2;
+  }
+
+  .markdown-body h2 {
+    @apply font-display text-base font-semibold text-ink-primary mt-3 mb-1.5;
+  }
+
+  .markdown-body h3 {
+    @apply font-medium text-sm text-ink-primary mt-2 mb-1;
+  }
+
+  .markdown-body h4 {
+    @apply font-medium text-sm text-ink-secondary mt-2 mb-1;
+  }
+
+  .markdown-body p {
+    @apply text-xs text-ink-primary my-1.5 leading-relaxed;
+  }
+
+  .markdown-body ul {
+    @apply text-xs text-ink-primary my-1.5 pl-4;
+    list-style: disc;
+  }
+
+  .markdown-body ol {
+    @apply text-xs text-ink-primary my-1.5 pl-4;
+    list-style: decimal;
+  }
+
+  .markdown-body li {
+    @apply my-0.5;
+  }
+
+  .markdown-body code {
+    @apply bg-canvas-sunken border border-line rounded px-1 py-0.5;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85em;
+    color: rgb(var(--color-accent));
+  }
+
+  .markdown-body pre {
+    @apply bg-canvas-sunken border border-line rounded p-2 my-2 overflow-x-auto;
+  }
+
+  .markdown-body pre code {
+    @apply bg-transparent border-none p-0;
+    color: rgb(var(--color-ink-primary));
+  }
+
+  .markdown-body strong {
+    color: rgb(var(--color-ink-primary));
+    font-weight: 600;
+  }
+
+  .markdown-body em {
+    font-style: italic;
+  }
+
+  .markdown-body blockquote {
+    @apply border-l-2 border-accent pl-2 my-1.5 text-ink-muted italic;
+  }
+
+  .markdown-body hr {
+    @apply border-line my-2;
+  }
+
+  .markdown-body a {
+    @apply text-accent underline hover:text-accent-hover;
+  }
+
+  .surface-sunken {
+    @apply bg-canvas-sunken border border-line-subtle rounded-lg;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md
+           bg-accent text-canvas-sunken font-medium text-sm
+           hover:bg-accent-hover transition-colors duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md
+           border border-line text-ink-primary text-sm
+           hover:bg-canvas-elevated hover:border-line-strong transition-colors duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md
+           text-ink-secondary text-sm
+           hover:text-ink-primary hover:bg-canvas-elevated transition-colors duration-150;
+  }
+
+  .input-field {
+    @apply w-full px-3 py-2 rounded-md
+           bg-canvas-sunken border border-line
+           text-ink-primary text-sm placeholder:text-ink-muted
+           focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent
+           transition-colors duration-150;
+  }
+}
