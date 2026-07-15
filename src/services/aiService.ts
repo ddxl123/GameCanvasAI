@@ -10,6 +10,27 @@ export interface GenerationResult {
   patch: Record<string, unknown>;
 }
 
+/**
+ * 元素级生成的额外上下文。
+ * 目前仅 "node" 类型使用 existingNodes 来支持 AI 生成连接线（连接到画布上已有节点）。
+ */
+export interface GenerationContext {
+  /** 当前画布上已有的机制节点（供 "node" 类型生成 edges 时引用） */
+  existingNodes?: Array<{ id: string; label: string; type: string }>;
+}
+
+/** AI 建议的连接线（元素级 node 生成时，连接到已有节点） */
+export interface SuggestedEdge {
+  /** 目标节点的 label（必须与 existingNodes 中的 label 匹配） */
+  targetLabel: string;
+  /** 边类型（17 种之一） */
+  type: string;
+  /** 方向：out=本节点→目标，in=目标→本节点 */
+  direction: "out" | "in";
+  /** 可选连线标签 */
+  label?: string;
+}
+
 /** 是否已配置真实 AI（有 key 即视为已配置） */
 export function isAIConfigured(): boolean {
   return Boolean(useAIStore.getState().getActiveConfig());
@@ -85,9 +106,16 @@ function getSystemPrompt(element: CanvasElement): string {
 ## 生成要求
 - label：节点名称（有游戏感）
 - description：机制说明（写到实现层面，40-80字）
+- edges：建议 0-3 条连接线，把本节点连接到画布上已有的节点，形成关系网络
+  - targetLabel：目标节点的 label（必须来自用户消息中列出的"画布已有节点"列表，不得编造）
+  - type：边类型，17 种之一：
+    通信类 invoke/subscribe/emit/pass；数据流类 produce/consume/transform/modify；
+    结构类 compose/reference/belong；控制类 enable/inhibit/branch；交互类 cooperate/interact/oppose
+  - direction：out=本节点→目标，in=目标→本节点
+  - 若画布上没有合适的已有节点，edges 返回空数组 []
 
-返回 JSON：{label, description}
-description 放入 data.description 字段。`;
+返回 JSON：{label, description, edges: [{targetLabel, type, direction, label?}]}
+description 放入 data.description 字段，edges 用于创建画布连线。`;
     case "rule":
       return `你是拥有15年经验的资深游戏规则设计师。
 
@@ -140,14 +168,21 @@ description 放入 data.description 字段。`;
 }
 
 /** 构建用户消息内容 */
-function buildUserMessage(element: CanvasElement, prompt: string): string {
+function buildUserMessage(
+  element: CanvasElement,
+  prompt: string,
+  context?: GenerationContext
+): string {
   const p = prompt.trim();
-  const ctx = getElementContext(element);
+  const ctx = getElementContext(element, context);
   return `${ctx}\n\n用户需求：${p || "请生成默认内容"}`;
 }
 
 /** 提取元素上下文信息，帮助 AI 理解当前节点在设计中的位置 */
-function getElementContext(element: CanvasElement): string {
+function getElementContext(
+  element: CanvasElement,
+  context?: GenerationContext
+): string {
   switch (element.type) {
     case "core-loop": {
       const steps = element.data.steps ?? [];
@@ -179,10 +214,19 @@ function getElementContext(element: CanvasElement): string {
         .join("\n");
     case "node": {
       const desc = element.data.data?.description;
+      const existing = context?.existingNodes ?? [];
+      const existingDesc =
+        existing.length > 0
+          ? existing
+              .map((n) => `- ${n.label} [${n.type}]`)
+              .join("\n")
+          : "（画布上暂无其他节点）";
       return [
         `当前机制节点：${element.data.label}（类型：${element.data.type}）`,
         `所属图：${element.graphName}`,
         typeof desc === "string" && desc ? `当前描述：${desc}` : "",
+        `## 画布已有节点（edges 的 targetLabel 必须来自此列表）`,
+        existingDesc,
       ]
         .filter(Boolean)
         .join("\n");
@@ -266,7 +310,29 @@ function patchFromAI(element: CanvasElement, json: Record<string, unknown>): Gen
     case "node": {
       const label = typeof json.label === "string" ? json.label : element.data.label;
       const description = typeof json.description === "string" ? json.description : "";
-      return { text: label, patch: { label, data: { ...element.data.data, description } } };
+      // 解析 AI 建议的连接线（仅做结构校验，targetLabel/type/direction 的语义校验留给调用方）
+      const edges: SuggestedEdge[] = Array.isArray(json.edges)
+        ? (json.edges as Array<Record<string, unknown>>)
+            .map((e) => {
+              const targetLabel = typeof e.targetLabel === "string" ? e.targetLabel : "";
+              const type = typeof e.type === "string" ? e.type : "";
+              const directionRaw = e.direction;
+              const direction: "out" | "in" =
+                directionRaw === "out" || directionRaw === "in" ? directionRaw : "out";
+              const labelOpt = typeof e.label === "string" ? e.label : undefined;
+              if (!targetLabel || !type) return null;
+              return { targetLabel, type, direction, ...(labelOpt ? { label: labelOpt } : {}) };
+            })
+            .filter((e): e is SuggestedEdge => e !== null)
+        : [];
+      const text =
+        edges.length > 0
+          ? `${label}（含 ${edges.length} 条连接）`
+          : label;
+      return {
+        text,
+        patch: { label, data: { ...element.data.data, description }, edges },
+      };
     }
     case "rule": {
       const condition = typeof json.condition === "string" ? json.condition : "";
@@ -336,6 +402,8 @@ function produceTemplate(element: CanvasElement, prompt: string): GenerationResu
               ? `基于「${p}」的机制：处理玩家与系统的核心交互，定义输入条件和输出结果。`
               : "物理伤害 = (基础攻击力 × 武器修正 - 目标防御力) × 暴击系数。考虑护甲穿透、元素抗性、状态加成。",
           },
+          // 模板生成不产生连接线（未配置 API 时的 fallback）
+          edges: [] as SuggestedEdge[],
         },
       };
     case "rule":
@@ -373,9 +441,13 @@ function produceTemplate(element: CanvasElement, prompt: string): GenerationResu
 }
 
 /** 调用 OpenAI 兼容的 chat completions 接口（委托 aiClient.callAI，复用超时/取消/错误处理） */
-async function callOpenAI(element: CanvasElement, prompt: string): Promise<GenerationResult> {
+async function callOpenAI(
+  element: CanvasElement,
+  prompt: string,
+  context?: GenerationContext
+): Promise<GenerationResult> {
   const systemPrompt = getSystemPrompt(element);
-  const userMessage = buildUserMessage(element, prompt);
+  const userMessage = buildUserMessage(element, prompt, context);
 
   const config = useAIStore.getState().getActiveConfig();
   if (!config) {
@@ -405,10 +477,15 @@ async function callOpenAI(element: CanvasElement, prompt: string): Promise<Gener
 
 /**
  * 生成内容：已配置 API key 走真实调用，否则走模拟生成。
+ * context 仅对 "node" 类型生效，传入画布已有节点以支持连接线生成。
  */
-export async function generateContent(element: CanvasElement, prompt: string): Promise<GenerationResult> {
+export async function generateContent(
+  element: CanvasElement,
+  prompt: string,
+  context?: GenerationContext
+): Promise<GenerationResult> {
   if (isAIConfigured()) {
-    return callOpenAI(element, prompt);
+    return callOpenAI(element, prompt, context);
   }
   // 模拟延迟
   await new Promise((r) => setTimeout(r, 1200));

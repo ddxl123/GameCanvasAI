@@ -13,6 +13,7 @@ import ReactFlowCanvas from "@/features/canvas/ReactFlowCanvas";
 import type { CanvasConnection } from "@/features/canvas/useFlowState";
 import { useNodeGeneration } from "@/features/canvas/useNodeGeneration";
 import type { ElementStatus } from "@/features/canvas/ElementNode";
+import type { SuggestedEdge } from "@/services/aiService";
 
 import type {
   CanvasElement,
@@ -421,7 +422,16 @@ export default function UnifiedWorkspace() {
   const handleGenerate = useCallback(
     async (element: CanvasElement, prompt: string) => {
       try {
-        const result = await generate(element, prompt);
+        // "node" 类型传入画布已有节点，支持 AI 生成连接线
+        const context =
+          element.type === "node"
+            ? {
+                existingNodes: nodes
+                  .filter((n) => n.id !== element.data.id)
+                  .map((n) => ({ id: n.id, label: n.label, type: n.type })),
+              }
+            : undefined;
+        const result = await generate(element, prompt, context);
         const patch = result.patch;
         // 根据元素类型构造类型安全的 patch 并写入对应 store
         switch (element.type) {
@@ -469,6 +479,46 @@ export default function UnifiedWorkspace() {
               };
             }
             await updateMechanismNode(element.data.id, nodePatch);
+            // 创建 AI 建议的连接线（targetLabel → 节点 id 解析，方向决定 source/target）
+            const suggestedEdges = Array.isArray(patch.edges)
+              ? (patch.edges as SuggestedEdge[])
+              : [];
+            if (suggestedEdges.length > 0) {
+              // 当前画布节点 label→id 映射（含刚更新 label 后的最新值）
+              const labelToId = new Map<string, string>();
+              for (const n of nodes) {
+                labelToId.set(n.label, n.id);
+              }
+              // 若 AI 更新了本节点 label，映射也需更新
+              if (typeof patch.label === "string") {
+                labelToId.set(patch.label, element.data.id);
+                labelToId.delete(element.data.label);
+              }
+              let createdEdgeCount = 0;
+              for (const se of suggestedEdges) {
+                const targetId = labelToId.get(se.targetLabel);
+                if (!targetId) {
+                  console.warn(`[AI] 跳过连接：找不到目标节点「${se.targetLabel}」`);
+                  continue;
+                }
+                const source = se.direction === "out" ? element.data.id : targetId;
+                const target = se.direction === "out" ? targetId : element.data.id;
+                await mechanismAddEdge({
+                  source,
+                  target,
+                  type: se.type as EdgeType,
+                  label: se.label,
+                });
+                createdEdgeCount++;
+              }
+              if (createdEdgeCount > 0) {
+                addToast({
+                  title: "已生成连接线",
+                  description: `AI 建议并创建 ${createdEdgeCount} 条连接`,
+                  variant: "success",
+                });
+              }
+            }
             break;
           }
           case "rule": {
@@ -503,6 +553,7 @@ export default function UnifiedWorkspace() {
     [
       generate, updateLoop, updateStep, updateMoment, updateMechanismNode,
       updateRule, updateLevelNode, updateAttribute, addToast,
+      nodes, mechanismAddEdge,
     ]
   );
 

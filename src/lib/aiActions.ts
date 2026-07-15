@@ -306,14 +306,14 @@ export const DESIGN_TOOLS_OPENAI = [
     function: {
       name: "apply_mechanism",
       description:
-        "将生成的玩法机制网络应用到当前的机制图中。这是一个关系网络（含单向/双向/无向边）。节点数和维度覆盖根据游戏类型灵活决定（休闲 8-15，中型 15-25，复杂 20-35）。必须包含至少 1 个核心玩法循环。在给出文字说明后调用此工具。注意：如果用户尚未明确创意方向，应先提问而非立即调用此工具。",
+        "将生成的玩法机制网络应用到当前的机制图中。这是一个关系网络（含单向/双向/无向边）。节点数和维度覆盖根据游戏类型灵活决定（休闲 8-15，中型 15-25，复杂 20-35）。必须包含至少 1 个核心玩法循环。在给出文字说明后调用此工具。注意：tool_calls 一旦返回会立即自动应用到画布（无需用户确认），所以不要在一次调用中重复创建相同节点；如需补充请用 add_node_to_existing。",
       parameters: {
         type: "object",
         properties: {
           nodes: {
             type: "array",
             description:
-              "机制节点列表（6-12 个）。必须跨越至少 3 个维度（不要只用逻辑层）。每个节点必须出现在至少一条 edge 中，不允许孤立节点。建议优先使用成长层、反馈层、社交层节点。",
+              "机制节点列表。节点数根据游戏类型灵活决定（休闲 8-15，中型 15-25，复杂 20-35）。必须跨越至少 3 个维度（不要只用逻辑层）。每个节点必须出现在至少一条 edge 中，不允许孤立节点。建议优先使用成长层、反馈层、社交层节点。每个节点只需 label/type/description 三个字段（不要放 id 或 customFields，会被忽略）。",
             items: {
               type: "object",
               properties: {
@@ -1043,8 +1043,33 @@ export async function applyMechanismAction(
   );
 
   const labelToId = new Map<string, string>();
+  // 智能体循环去重：先收集当前图已有节点的 label→id 映射。
+  // AI 在多轮循环中可能重复调用 apply_mechanism 创建同名节点，此时复用已有节点而非重复创建，
+  // 避免"玩家攻击"等节点在画布上出现多份。仅当 label 完全一致时复用（不做模糊匹配，避免误合并）。
+  const existingLabelToId = new Map<string, string>();
+  for (const n of store.nodes) {
+    existingLabelToId.set(n.label, n.id);
+  }
+  const reusedLabels: string[] = [];
   // 临时位置，后续会被 ELK 覆盖
   for (const node of validNodes) {
+    // 去重：同名节点复用已有 id，不重复创建
+    const existingId = existingLabelToId.get(node.label);
+    if (existingId) {
+      labelToId.set(node.label, existingId);
+      reusedLabels.push(node.label);
+      // 若 AI 提供了新描述且已有节点描述为空，补充描述（不覆盖已有描述）
+      if (node.description) {
+        const existingNode = store.nodes.find((n) => n.id === existingId);
+        const existingDesc = existingNode?.data?.description as string | undefined;
+        if (!existingDesc) {
+          await store.updateNode(existingId, {
+            data: { description: node.description },
+          });
+        }
+      }
+      continue;
+    }
     const id = await store.addNode(node.type, { x: 0, y: 0 }, node.label);
     if (id) {
       labelToId.set(node.label, id);
@@ -1055,6 +1080,11 @@ export async function applyMechanismAction(
         });
       }
     }
+  }
+  if (reusedLabels.length > 0) {
+    console.warn(
+      `[apply_mechanism] 检测到 ${reusedLabels.length} 个同名节点已存在，已复用而非重复创建：${reusedLabels.join(", ")}`
+    );
   }
 
   // ===== 3. 创建所有边 =====

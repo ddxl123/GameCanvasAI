@@ -572,6 +572,13 @@ export async function callAIStream(
   let stoppedByLength = false;
   let fallbackRetryCount = 0;
   let disableThinking = false;
+  // 连续失败熔断：parseError 或 onToolApply 抛错时递增，成功归零；超过阈值停止循环
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 3;
+  // 生成类动作"只输出文字无 tool_calls"的强制重试计数（仅第一轮 forceToolName 存在时生效）
+  let noToolCallRetryCount = 0;
+  const MAX_NO_TOOLCALL_RETRY = 1;
+  const isGenerationAction = !!options.forceToolName;
 
   // 循环内不触发 onFinish（避免重复），循环外统一调用
   const innerCbs: StreamCallbacks = { ...cbs, onFinish: undefined };
@@ -644,6 +651,36 @@ export async function callAIStream(
         continue;
       }
 
+      // 生成类动作强制重试：第一轮有 content 但无 tool_calls（AI 只输出文字没调用工具）
+      // 仅在生成类动作（forceToolName 存在）且未重试过时触发一次
+      if (
+        roundResult.content &&
+        isGenerationAction &&
+        noToolCallRetryCount < MAX_NO_TOOLCALL_RETRY
+      ) {
+        noToolCallRetryCount++;
+        console.warn("[AI] 生成类动作只输出文字未调用工具，强制重试一次", {
+          round,
+          contentLength: roundResult.content.length,
+        });
+        // 先把 AI 的文字回复追加为 assistant 消息（保持对话连贯）
+        messages = [
+          ...messages,
+          {
+            role: "assistant" as const,
+            content: roundResult.content,
+          },
+          {
+            role: "user" as const,
+            content:
+              "你刚才只输出了文字说明，但没有通过 API 的 tool_calls 字段调用工具。" +
+              "请立即通过 tool_calls 调用工具提交结构化设计，否则用户在画布上看不到任何结果。" +
+              "不要输出 <tool_call> 标签或 apply_xxx(...) 等文本格式，这些不会被识别。",
+          },
+        ];
+        continue;
+      }
+
       // 重试后仍为空，显示提示
       if (!roundResult.content) {
         const emptyMsg = stoppedByLength
@@ -682,9 +719,11 @@ export async function callAIStream(
     for (const tc of roundResult.toolCalls) {
       // 参数解析失败：不应用工具，回传错误让 AI 重试
       if (tc.parseError) {
+        consecutiveFailures++;
         console.warn("[AI] 参数解析失败，跳过应用并回传错误", {
           name: tc.name,
           parseError: tc.parseError,
+          consecutiveFailures,
         });
         messages = [
           ...messages,
@@ -700,6 +739,7 @@ export async function callAIStream(
 
       try {
         const result = await cbs.onToolApply!(tc);
+        consecutiveFailures = 0; // 成功归零
         messages = [
           ...messages,
           {
@@ -710,7 +750,13 @@ export async function callAIStream(
           },
         ];
       } catch (e) {
+        consecutiveFailures++;
         const errMsg = e instanceof Error ? e.message : String(e);
+        console.warn("[AI] 工具应用失败", {
+          name: tc.name,
+          error: errMsg,
+          consecutiveFailures,
+        });
         messages = [
           ...messages,
           {
@@ -721,6 +767,18 @@ export async function callAIStream(
           },
         ];
       }
+    }
+
+    // 连续失败熔断：超过阈值时停止循环，避免无效重试消耗轮次
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      console.warn(
+        `[AI] 连续 ${consecutiveFailures} 次工具调用失败，触发熔断停止循环`
+      );
+      const circuitMsg =
+        "\n\n> ⚠️ AI 工具调用连续失败，已停止重试。请检查输入或重试。";
+      allContent += circuitMsg;
+      cbs.onChunk?.(circuitMsg);
+      break;
     }
 
     if (round >= MAX_AGENT_ROUNDS) {

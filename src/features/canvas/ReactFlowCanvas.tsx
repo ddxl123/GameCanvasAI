@@ -522,6 +522,8 @@ export default function ReactFlowCanvas({
 
   const canvasCreateRequest = useUIStore((s) => s.canvasCreateRequest);
   const consumeCanvasCreateRequest = useUIStore((s) => s.consumeCanvasCreateRequest);
+  // AI 自动应用 tool_call 后递增此计数器，触发画布适应新内容
+  const fitViewRequest = useUIStore((s) => s.fitViewRequest);
 
   useEffect(() => {
     if (!canvasCreateRequest) return;
@@ -539,6 +541,15 @@ export default function ReactFlowCanvas({
     onCreateElementAtRef.current?.(canvasCreateRequest.type, center, canvasCreateRequest.nodeSubtype);
     consumeCanvasCreateRequest();
   }, [canvasCreateRequest, rf, consumeCanvasCreateRequest]);
+
+  // 监听 fitView 请求（AI 自动应用节点/边后递增），延迟触发以等 store 写入完成
+  useEffect(() => {
+    if (fitViewRequest === 0) return;
+    const timer = setTimeout(() => {
+      rf.fitView({ padding: 0.2, duration: 300 });
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [fitViewRequest, rf]);
 
   const { zoom: currentZoom } = useViewport();
   const isEmpty = elements.length === 0;

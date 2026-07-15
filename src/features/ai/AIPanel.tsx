@@ -37,7 +37,6 @@ import {
   Square,
   Wand,
   Check,
-  X,
   MessageSquare,
   Undo2,
   Plus,
@@ -182,8 +181,6 @@ interface ChatItem {
   reasoning?: string;
   // 自动应用的 tool call 记录（每个可单独撤销）
   appliedRecords?: AppliedRecord[];
-  // 待用户确认的 tool call 预览列表（不立即应用，先预览）
-  pendingToolCalls?: PendingToolCall[];
 }
 
 /** 单次 tool call 的自动应用记录，可单独撤销 */
@@ -197,18 +194,8 @@ interface AppliedRecord {
   undone?: boolean;
 }
 
-/** 待应用 tool call 的预览项（收集后等待用户确认，不立即写入画布） */
-interface PendingToolCall {
-  toolCallId: string;
-  toolName: string;
-  arguments: Record<string, unknown>;
-  // 预览摘要（如"新增 5 个节点"），由 buildToolCallSummary 生成
-  summary: string;
-}
-
 /**
- * 根据 tool call 的名称和参数生成预览摘要（不实际应用，仅用于预览面板展示）。
- * 让用户在确认前即可看到每条变更的简述。
+ * 根据 tool call 的名称和参数生成预览摘要（用于 appliedRecords 展示）。
  */
 function buildToolCallSummary(
   toolName: string,
@@ -254,6 +241,7 @@ export default function AIPanel() {
   const { attributes, formulas } = useNumericStore();
   const { sections } = useDocumentStore();
   const addToast = useUIStore((s) => s.addToast);
+  const requestFitView = useUIStore((s) => s.requestFitView);
   const navigate = useNavigate();
 
   const config = getActiveConfig();
@@ -265,6 +253,9 @@ export default function AIPanel() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   // 追踪最后应用的模块（用于应用后跳转）；收集阶段不写入，仅在用户确认应用时更新
   const lastAppliedModuleRef = useRef<"mechanism" | "numeric" | "document" | null>(null);
+  // 追踪本次生成是否触达机制画布（apply_mechanism / add_node_to_existing / update_node / remove_node），
+  // 用于 AI 完成后触发 fitView 适应新节点
+  const mechanismTouchedRef = useRef<boolean>(false);
 
   // ===== AI 对话持久化 =====
   const {
@@ -503,6 +494,7 @@ export default function AIPanel() {
       const aiItemId = aiMsg.id;
       // 收集阶段重置模块追踪；实际跳转推迟到用户在预览面板确认应用后
       lastAppliedModuleRef.current = null;
+      mechanismTouchedRef.current = false;
 
       setChat((c) => [
         ...c,
@@ -521,30 +513,30 @@ export default function AIPanel() {
         {
           onChunk: (chunk) => appendAIChunk(aiItemId, chunk),
           onReasoning: (chunk) => appendReasoning(aiItemId, chunk),
-          // agentic 循环：把 tool call 收集到 pendingToolCalls 供用户预览确认，
-          // 不立即应用；返回摘要给 AI 让其继续推理（实际写入推迟到用户点击"应用"）
+          // agentic 循环：tool_call 到达后**立即自动应用**到画布（无需用户确认），
+          // 把应用结果摘要回传给 AI 让其继续推理。每条 tool_call 单独记录到
+          // appliedRecords，用户可在 AI 完成后逐条撤销。
           onToolApply: async (tc) => {
             const summary = buildToolCallSummary(tc.name, tc.arguments);
-            const pendingId = `pc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-            setChat((c) =>
-              c.map((item) =>
-                item.id === aiItemId
-                  ? {
-                      ...item,
-                      pendingToolCalls: [
-                        ...(item.pendingToolCalls ?? []),
-                        {
-                          toolCallId: pendingId,
-                          toolName: tc.name,
-                          arguments: tc.arguments,
-                          summary,
-                        },
-                      ],
-                    }
-                  : item
-              )
-            );
-            return summary;
+            // 标记是否触达机制画布（用于完成后 fitView）
+            if (
+              tc.name === "apply_mechanism" ||
+              tc.name === "add_node_to_existing" ||
+              tc.name === "update_node" ||
+              tc.name === "remove_node"
+            ) {
+              mechanismTouchedRef.current = true;
+            }
+            try {
+              const ok = await applyAndRecord(aiItemId, tc.name, tc.arguments);
+              if (ok) {
+                return `${summary}（已自动应用到画布）`;
+              }
+              return `${summary}（应用失败，请重试或调整参数）`;
+            } catch (e) {
+              const errMsg = e instanceof Error ? e.message : String(e);
+              return `应用失败: ${errMsg}。请重试或调整参数。`;
+            }
           },
           onFinish: (reason) => {
             if (reason === "length") {
@@ -562,18 +554,25 @@ export default function AIPanel() {
         }
       );
 
-      // 持久化最终 AI 回复（pendingToolCalls / appliedRecords 不持久化，仅限当前会话）
+      // 持久化最终 AI 回复（appliedRecords 不持久化，仅限当前会话）
       await updatePersistedMessage(aiItemId, {
         content: result.content,
       });
 
-      // 有待确认变更时提示用户在预览面板决策；无变更则按完成处理
+      // AI 完成后：若有 tool_call 被自动应用，跳转到对应模块并触发 fitView 适应新内容
       if (result.toolCalls.length > 0) {
         addToast({
           title: `${action.label}完成`,
-          description: "请在预览面板确认待应用变更",
-          variant: "default",
+          description: `已自动应用 ${result.toolCalls.length} 项变更`,
+          variant: "success",
         });
+        if (lastAppliedModuleRef.current && currentProject) {
+          navigate(`/project/${currentProject.id}/${lastAppliedModuleRef.current}`);
+        }
+        // 机制画布有新增/修改节点时，触发画布适应视图
+        if (mechanismTouchedRef.current) {
+          requestFitView();
+        }
       } else {
         addToast({ title: `${action.label}完成`, variant: "success" });
       }
@@ -691,87 +690,6 @@ export default function AIPanel() {
       addToast({ title: "应用失败", description: msg, variant: "error" });
       return false;
     }
-  };
-
-  // 全部应用：按收集顺序依次应用，成功后清空 pending 并跳转到最后应用的模块
-  const handleApplyAll = async (aiItemId: string) => {
-    const item = chat.find((c) => c.id === aiItemId);
-    const pending = item?.pendingToolCalls ?? [];
-    if (pending.length === 0) return;
-    let successCount = 0;
-    for (const pc of pending) {
-      const ok = await applyAndRecord(aiItemId, pc.toolName, pc.arguments);
-      if (ok) successCount++;
-    }
-    setChat((c) =>
-      c.map((it) =>
-        it.id === aiItemId ? { ...it, pendingToolCalls: [] } : it
-      )
-    );
-    if (successCount > 0) {
-      addToast({
-        title: "已应用全部变更",
-        description: `成功应用 ${successCount} 项`,
-        variant: "success",
-      });
-      if (lastAppliedModuleRef.current && currentProject) {
-        navigate(`/project/${currentProject.id}/${lastAppliedModuleRef.current}`);
-      }
-    }
-  };
-
-  // 全部丢弃：清空 pendingToolCalls，不应用任何变更
-  const handleDiscardAll = (aiItemId: string) => {
-    const item = chat.find((c) => c.id === aiItemId);
-    if (!item?.pendingToolCalls?.length) return;
-    setChat((c) =>
-      c.map((it) =>
-        it.id === aiItemId ? { ...it, pendingToolCalls: [] } : it
-      )
-    );
-    addToast({ title: "已丢弃全部变更", variant: "default" });
-  };
-
-  // 单条应用：应用后从 pending 移除（仅成功时移除），仍走 appliedRecords 撤销机制
-  const handleApplyOne = async (aiItemId: string, toolCallId: string) => {
-    const item = chat.find((c) => c.id === aiItemId);
-    const pc = item?.pendingToolCalls?.find((p) => p.toolCallId === toolCallId);
-    if (!pc) return;
-    const ok = await applyAndRecord(aiItemId, pc.toolName, pc.arguments);
-    if (ok) {
-      setChat((c) =>
-        c.map((it) =>
-          it.id === aiItemId
-            ? {
-                ...it,
-                pendingToolCalls: it.pendingToolCalls?.filter(
-                  (p) => p.toolCallId !== toolCallId
-                ),
-              }
-            : it
-        )
-      );
-      if (lastAppliedModuleRef.current && currentProject) {
-        navigate(`/project/${currentProject.id}/${lastAppliedModuleRef.current}`);
-      }
-    }
-  };
-
-  // 单条丢弃：仅从 pending 移除
-  const handleDiscardOne = (aiItemId: string, toolCallId: string) => {
-    setChat((c) =>
-      c.map((it) =>
-        it.id === aiItemId
-          ? {
-              ...it,
-              pendingToolCalls: it.pendingToolCalls?.filter(
-                (p) => p.toolCallId !== toolCallId
-              ),
-            }
-          : it
-      )
-    );
-    addToast({ title: "已丢弃", variant: "default" });
   };
 
   const handleChat = async () => {
@@ -1071,10 +989,6 @@ export default function AIPanel() {
                 item={item}
                 streaming={isLastAssistant && isGenerating}
                 onUndo={(toolCallId) => handleUndo(item.id, toolCallId)}
-                onApplyAll={() => void handleApplyAll(item.id)}
-                onDiscardAll={() => handleDiscardAll(item.id)}
-                onApplyOne={(toolCallId) => void handleApplyOne(item.id, toolCallId)}
-                onDiscardOne={(toolCallId) => handleDiscardOne(item.id, toolCallId)}
               />
             );
           })
@@ -1157,24 +1071,15 @@ function ChatBubble({
   item,
   streaming,
   onUndo,
-  onApplyAll,
-  onDiscardAll,
-  onApplyOne,
-  onDiscardOne,
 }: {
   item: ChatItem;
   streaming?: boolean;
   onUndo?: (toolCallId: string) => void;
-  onApplyAll?: () => void;
-  onDiscardAll?: () => void;
-  onApplyOne?: (toolCallId: string) => void;
-  onDiscardOne?: (toolCallId: string) => void;
 }) {
   const isUser = item.role === "user";
   const hasContent = item.content.trim().length > 0;
   const hasReasoning = (item.reasoning ?? "").trim().length > 0;
   const hasAppliedRecords = (item.appliedRecords?.length ?? 0) > 0;
-  const hasPendingToolCalls = (item.pendingToolCalls?.length ?? 0) > 0;
   return (
     <div
       className={cn(
@@ -1192,7 +1097,7 @@ function ChatBubble({
       >
         {isUser ? (
           item.content
-        ) : !hasContent && streaming && !hasAppliedRecords && !hasReasoning && !hasPendingToolCalls ? (
+        ) : !hasContent && streaming && !hasAppliedRecords && !hasReasoning ? (
           <span className="inline-flex items-center gap-1 text-ink-muted">
             <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
             <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse [animation-delay:0.2s]" />
@@ -1219,77 +1124,8 @@ function ChatBubble({
         )}
       </div>
 
-      {/* 预览待应用变更面板：收集到的 tool call 不立即写入，等用户确认 */}
-      {!isUser && hasPendingToolCalls && (
-        <div className="flex flex-col gap-1.5 max-w-[95%] p-2 rounded-lg border border-warn/40 bg-warn-muted/20">
-          <div className="flex items-center gap-1.5 text-2xs font-medium text-ink-primary">
-            <ClipboardCheck className="w-3 h-3 text-warn flex-shrink-0" />
-            <span>预览待应用变更（{item.pendingToolCalls!.length}）</span>
-          </div>
-          <div className="flex flex-col gap-1">
-            {item.pendingToolCalls!.map((pc) => (
-              <div
-                key={pc.toolCallId}
-                className="flex items-center justify-between gap-2 px-2 py-1 rounded-md text-2xs bg-canvas-sunken border border-line"
-              >
-                <span className="flex items-center gap-1.5 text-ink-secondary min-w-0">
-                  <Wand2 className="w-3 h-3 text-accent flex-shrink-0" />
-                  <span className="truncate">{pc.summary}</span>
-                </span>
-                <div className="flex items-center gap-0.5 flex-shrink-0">
-                  {onApplyOne && (
-                    <button
-                      onClick={() => onApplyOne(pc.toolCallId)}
-                      disabled={streaming}
-                      className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-2xs text-accent hover:bg-accent/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                      title="应用此项"
-                    >
-                      <Check className="w-3 h-3" />
-                      应用
-                    </button>
-                  )}
-                  {onDiscardOne && (
-                    <button
-                      onClick={() => onDiscardOne(pc.toolCallId)}
-                      disabled={streaming}
-                      className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-2xs text-ink-muted hover:bg-canvas-elevated hover:text-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                      title="丢弃此项"
-                    >
-                      <X className="w-3 h-3" />
-                      丢弃
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="flex gap-1.5 pt-0.5">
-            {onApplyAll && (
-              <button
-                onClick={onApplyAll}
-                disabled={streaming}
-                className="flex-1 flex items-center justify-center gap-1 text-2xs px-2 py-1 rounded bg-accent text-canvas-sunken font-medium hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <Check className="w-3 h-3" />
-                全部应用
-              </button>
-            )}
-            {onDiscardAll && (
-              <button
-                onClick={onDiscardAll}
-                disabled={streaming}
-                className="flex-1 flex items-center justify-center gap-1 text-2xs px-2 py-1 rounded border border-line text-ink-secondary hover:bg-canvas-elevated hover:text-danger disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <X className="w-3 h-3" />
-                全部丢弃
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 已自动应用的 tool call 记录（每个可单独撤销） */}
-      {!isUser && !streaming && hasAppliedRecords && (
+      {/* 已自动应用的 tool call 记录（每个可单独撤销，生成过程中实时显示） */}
+      {!isUser && hasAppliedRecords && (
         <div className="flex flex-col gap-1 max-w-[95%]">
           {item.appliedRecords!.map((rec) => (
             <div

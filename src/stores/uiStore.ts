@@ -26,6 +26,9 @@ interface UIState {
   hiddenSemantics: Set<string>;
   // 节点卡片内是否显示自定义字段（全局开关）
   showNodeFields: boolean;
+  // 画布 fitView 请求：递增计数器，ReactFlowCanvas 订阅其变化触发 rf.fitView()
+  // 用于在 AI 自动应用 tool_call 后让画布适应新内容
+  fitViewRequest: number;
 
   toggleLeftPanel: () => void;
   toggleRightPanel: () => void;
@@ -44,6 +47,8 @@ interface UIState {
   toggleHiddenSemantic: (sem: string) => void;
   clearHiddenFilters: () => void;
   toggleShowNodeFields: () => void;
+  /** 递增 fitViewRequest 计数器，触发 ReactFlowCanvas 调用 rf.fitView() */
+  requestFitView: () => void;
 }
 
 export interface Toast {
@@ -70,6 +75,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   hiddenDimensions: new Set<string>(),
   hiddenSemantics: new Set<string>(),
   showNodeFields: true,
+  fitViewRequest: 0,
 
   toggleLeftPanel: () =>
     set((s) => ({ leftPanelCollapsed: !s.leftPanelCollapsed })),
@@ -127,4 +133,5 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({ hiddenDimensions: new Set(), hiddenSemantics: new Set() }),
   toggleShowNodeFields: () =>
     set((s) => ({ showNodeFields: !s.showNodeFields })),
+  requestFitView: () => set((s) => ({ fitViewRequest: s.fitViewRequest + 1 })),
 }));
