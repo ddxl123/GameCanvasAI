@@ -1,7 +1,27 @@
 import type { AIConfig, AIProvider, UserSettings } from "@/types";
 
-const SETTINGS_KEY = "game-design:settings";
-const AI_CONFIGS_KEY = "game-design:ai-configs";
+const SETTINGS_KEY = "gamecanvasai:settings";
+const AI_CONFIGS_KEY = "gamecanvasai:ai-configs";
+// 旧版 key（项目原名 game_design），用于一次性迁移
+const LEGACY_SETTINGS_KEY = "game-design:settings";
+const LEGACY_AI_CONFIGS_KEY = "game-design:ai-configs";
+
+/** 读取 localStorage，新 key 优先，回退旧 key 并迁移 */
+function readWithLegacy(newKey: string, legacyKey: string): string | null {
+  const v = localStorage.getItem(newKey);
+  if (v) return v;
+  const legacy = localStorage.getItem(legacyKey);
+  if (legacy) {
+    // 迁移到新 key 并清理旧 key
+    try {
+      localStorage.setItem(newKey, legacy);
+      localStorage.removeItem(legacyKey);
+    } catch {
+      /* 忽略迁移失败 */
+    }
+  }
+  return legacy;
+}
 
 const DEFAULT_SETTINGS: UserSettings = {
   defaultModel: "openai",
@@ -11,7 +31,7 @@ const DEFAULT_SETTINGS: UserSettings = {
 
 export function loadSettings(): UserSettings {
   try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
+    const raw = readWithLegacy(SETTINGS_KEY, LEGACY_SETTINGS_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_SETTINGS, ...parsed };
@@ -61,7 +81,7 @@ export function loadAIConfigs(): Record<AIProvider, AIConfig> {
   };
 
   try {
-    const raw = localStorage.getItem(AI_CONFIGS_KEY);
+    const raw = readWithLegacy(AI_CONFIGS_KEY, LEGACY_AI_CONFIGS_KEY);
     if (!raw) return defaultConfigs;
     const parsed = JSON.parse(raw) as Record<AIProvider, AIConfig>;
     // 合并默认值，防止新增字段缺失

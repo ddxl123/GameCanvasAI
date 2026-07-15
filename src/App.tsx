@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, Link } from "react-router-dom";
 import Toaster from "@/components/ui/Toaster";
 
 const Home = lazy(() => import("@/pages/Home"));
@@ -12,6 +12,16 @@ function Loading() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-canvas">
       <div className="text-ink-muted animate-pulse">加载中…</div>
+    </div>
+  );
+}
+
+function NotFound() {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-canvas gap-3">
+      <div className="text-4xl font-bold text-ink-muted">404</div>
+      <div className="text-sm text-ink-secondary">页面不存在</div>
+      <Link to="/" className="btn-primary mt-2">返回首页</Link>
     </div>
   );
 }
@@ -29,6 +39,7 @@ export default function App() {
             <Route path="mechanism" element={<Workspace />} />
             <Route path="dashboard" element={<Dashboard />} />
           </Route>
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
       <Toaster />

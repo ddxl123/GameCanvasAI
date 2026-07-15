@@ -14,6 +14,7 @@ import { buildMentorPrompt } from "@/lib/aiPrompts";
 import {
   analyzeFormulaErrors,
   analyzeGraphIssues,
+  explainAIError,
   type FriendlyError,
 } from "@/lib/friendlyErrors";
 import { ANTI_PATTERNS, type AntiPattern } from "@/data/antiPatterns";
@@ -37,7 +38,9 @@ import {
   Loader2,
   Square,
   CheckCircle2,
+  Wrench,
 } from "lucide-react";
+import { db } from "@/db";
 
 interface AIMentorPanelProps {
   open: boolean;
@@ -56,6 +59,8 @@ interface MentorSuggestion {
   solution: string;
   example?: string;
   explainContext: string; // 给 AI 详细解释时的上下文
+  /** 可选：一键修复动作标识 */
+  fixId?: string;
 }
 
 const SEVERITY_META: Record<
@@ -72,6 +77,14 @@ const CATEGORY_LABEL: Record<AntiPattern["category"], string> = {
   numeric: "数值",
   gdd: "文档",
   structure: "结构",
+};
+
+/** 反模式 → 一键修复动作标识的映射 */
+const FIX_ID_MAP: Record<string, string> = {
+  "no-failure-penalty": "add-penalty-node",
+  "reward-too-uniform": "add-rng-node",
+  "numeric-no-cap": "cap-numeric-values",
+  "gdd-no-core-loop": "add-core-loop-section",
 };
 
 function levelToSeverity(level: FriendlyError["level"]): Severity {
@@ -301,6 +314,7 @@ function buildSuggestions(params: {
       solution: pattern.solution,
       example: pattern.example,
       explainContext: `反模式：${pattern.title}\n为什么是问题：${pattern.why}\n当前情况：${detail}`,
+      fixId: FIX_ID_MAP[pattern.id],
     });
   }
 
@@ -338,6 +352,7 @@ export default function AIMentorPanel({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [aiExplain, setAiExplain] = useState<Record<string, string>>({});
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [fixingId, setFixingId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // 关闭面板时中止进行中的流式请求
@@ -398,7 +413,7 @@ export default function AIMentorPanel({
       {
         title: s.title,
         problem: s.problem,
-        why: "",
+        why: s.explainContext,
         solution: s.solution ?? "",
       },
       {
@@ -430,13 +445,13 @@ export default function AIMentorPanel({
         }
       );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "未知错误";
       if (e instanceof DOMException && e.name === "AbortError") {
         // 用户主动停止，不打扰
       } else {
+        const errInfo = explainAIError(e);
         addToast({
-          title: "AI 解释失败",
-          description: msg,
+          title: errInfo.title,
+          description: errInfo.description,
           variant: "error",
         });
       }
@@ -452,6 +467,108 @@ export default function AIMentorPanel({
     abortRef.current = null;
     setLoadingId(null);
     setIsGenerating(false);
+  };
+
+  const handleFix = async (s: MentorSuggestion) => {
+    if (!s.fixId || fixingId !== null) return;
+    if (!currentProject) {
+      addToast({ title: "无当前项目", variant: "warning" });
+      return;
+    }
+    setFixingId(s.id);
+    try {
+      switch (s.fixId) {
+        case "add-penalty-node": {
+          const mech = useMechanismStore.getState();
+          if (!mech.currentGraphId) {
+            const graphs = await db.mechanismGraphs
+              .where("projectId")
+              .equals(currentProject.id)
+              .toArray();
+            graphs.sort((a, b) => b.updatedAt - a.updatedAt);
+            const first = graphs[0];
+            if (!first) throw new Error("当前项目没有机制图，请先创建一个");
+            await mech.selectGraph(first.id);
+          }
+          const nodeId = await useMechanismStore.getState().addNode(
+            "penalty",
+            { x: 200, y: 200 },
+            "失败惩罚"
+          );
+          if (!nodeId) throw new Error("添加节点失败，未选择机制图");
+          addToast({ title: "已添加惩罚节点", variant: "success" });
+          break;
+        }
+        case "add-rng-node": {
+          const mech = useMechanismStore.getState();
+          if (!mech.currentGraphId) {
+            const graphs = await db.mechanismGraphs
+              .where("projectId")
+              .equals(currentProject.id)
+              .toArray();
+            graphs.sort((a, b) => b.updatedAt - a.updatedAt);
+            const first = graphs[0];
+            if (!first) throw new Error("当前项目没有机制图，请先创建一个");
+            await mech.selectGraph(first.id);
+          }
+          const nodeId = await useMechanismStore.getState().addNode(
+            "rng",
+            { x: 200, y: 200 },
+            "随机数"
+          );
+          if (!nodeId) throw new Error("添加节点失败，未选择机制图");
+          addToast({ title: "已添加随机数节点", variant: "success" });
+          break;
+        }
+        case "cap-numeric-values": {
+          const num = useNumericStore.getState();
+          const bigAttrs = num.attributes.filter((a) => {
+            if (a.type !== "number") return false;
+            const v = parseFloat(a.value);
+            return !isNaN(v) && v > 1_000_000;
+          });
+          if (bigAttrs.length === 0) {
+            addToast({ title: "没有需要封顶的数值属性", variant: "warning" });
+            break;
+          }
+          for (const a of bigAttrs) {
+            await num.updateAttribute(a.id, { value: "1000000" });
+          }
+          addToast({
+            title: `已封顶 ${bigAttrs.length} 个数值属性`,
+            variant: "success",
+          });
+          break;
+        }
+        case "add-core-loop-section": {
+          const doc = useDocumentStore.getState();
+          if (!doc.currentDocId) {
+            const docs = await db.gddDocuments
+              .where("projectId")
+              .equals(currentProject.id)
+              .toArray();
+            docs.sort((a, b) => b.updatedAt - a.updatedAt);
+            const first = docs[0];
+            if (!first) throw new Error("当前项目没有 GDD 文档，请先创建一个");
+            await doc.selectDocument(first.id);
+          }
+          await useDocumentStore.getState().addSection(
+            "heading",
+            "核心循环",
+            "核心循环描述玩家在游戏中最频繁执行的主玩法闭环。\n\n建议补充以下内容：\n- 核心动作：玩家反复执行的关键行为\n- 反馈：每次动作带来的即时反馈\n- 奖励：循环产出的成长或资源\n- 目标：驱动玩家持续循环的长期目标"
+          );
+          addToast({ title: "已添加「核心循环」段落", variant: "success" });
+          break;
+        }
+        default:
+          break;
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "未知错误";
+      addToast({ title: "修复失败", description: msg, variant: "error" });
+    } finally {
+      setFixingId(null);
+    }
   };
 
   return (
@@ -503,6 +620,8 @@ export default function AIMentorPanel({
               aiEnabled={!!config}
               onExplain={() => void handleExplain(s)}
               onStop={handleStop}
+              onFix={() => void handleFix(s)}
+              fixing={fixingId === s.id}
             />
           ))}
         </div>
@@ -537,6 +656,8 @@ function SuggestionItem({
   aiEnabled,
   onExplain,
   onStop,
+  onFix,
+  fixing,
 }: {
   suggestion: MentorSuggestion;
   expanded: boolean;
@@ -546,6 +667,8 @@ function SuggestionItem({
   aiEnabled: boolean;
   onExplain: () => void;
   onStop: () => void;
+  onFix?: () => void;
+  fixing: boolean;
 }) {
   const sev = SEVERITY_META[suggestion.severity];
   const SevIcon = sev.icon;
@@ -630,10 +753,29 @@ function SuggestionItem({
                   <span className="text-2xs font-medium text-accent">
                     AI 详细解释
                   </span>
+                  {suggestion.fixId && onFix && (
+                    <button
+                      onClick={onFix}
+                      disabled={fixing}
+                      className={cn(
+                        "ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs font-medium transition-colors border",
+                        fixing
+                          ? "border-line text-ink-muted cursor-not-allowed"
+                          : "text-[#A3E635] bg-[rgba(163,230,53,0.1)] border-[rgba(163,230,53,0.4)] hover:bg-[#A3E635] hover:text-canvas-sunken"
+                      )}
+                      title="一键应用修复"
+                    >
+                      <Wrench className="w-2.5 h-2.5" />
+                      {fixing ? "修复中…" : "一键修复"}
+                    </button>
+                  )}
                   {loading && (
                     <button
                       onClick={onStop}
-                      className="ml-auto inline-flex items-center gap-1 text-2xs text-danger hover:underline"
+                      className={cn(
+                        "inline-flex items-center gap-1 text-2xs text-danger hover:underline",
+                        !(suggestion.fixId && onFix) && "ml-auto"
+                      )}
                     >
                       <Square className="w-2.5 h-2.5 fill-current" />
                       停止
@@ -650,20 +792,38 @@ function SuggestionItem({
                 )}
               </div>
             ) : (
-              <button
-                onClick={onExplain}
-                disabled={!aiEnabled}
-                className={cn(
-                  "inline-flex items-center gap-1 px-2 py-1 rounded text-2xs font-medium transition-colors border",
-                  aiEnabled
-                    ? "border-accent text-accent bg-accent-glow hover:bg-accent hover:text-canvas-sunken"
-                    : "border-line text-ink-muted cursor-not-allowed"
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={onExplain}
+                  disabled={!aiEnabled}
+                  className={cn(
+                    "inline-flex items-center gap-1 px-2 py-1 rounded text-2xs font-medium transition-colors border",
+                    aiEnabled
+                      ? "border-accent text-accent bg-accent-glow hover:bg-accent hover:text-canvas-sunken"
+                      : "border-line text-ink-muted cursor-not-allowed"
+                  )}
+                  title={aiEnabled ? "让 AI 详细解释这条建议" : "未配置 AI"}
+                >
+                  <Sparkles className="w-3 h-3" />
+                  问 AI 详细解释
+                </button>
+                {suggestion.fixId && onFix && (
+                  <button
+                    onClick={onFix}
+                    disabled={fixing}
+                    className={cn(
+                      "inline-flex items-center gap-1 px-2 py-1 rounded text-2xs font-medium transition-colors border",
+                      fixing
+                        ? "border-line text-ink-muted cursor-not-allowed"
+                        : "text-[#A3E635] bg-[rgba(163,230,53,0.1)] border-[rgba(163,230,53,0.4)] hover:bg-[#A3E635] hover:text-canvas-sunken"
+                    )}
+                    title="一键应用修复"
+                  >
+                    <Wrench className="w-3 h-3" />
+                    {fixing ? "修复中…" : "一键修复"}
+                  </button>
                 )}
-                title={aiEnabled ? "让 AI 详细解释这条建议" : "未配置 AI"}
-              >
-                <Sparkles className="w-3 h-3" />
-                问 AI 详细解释
-              </button>
+              </div>
             )}
           </div>
         </div>

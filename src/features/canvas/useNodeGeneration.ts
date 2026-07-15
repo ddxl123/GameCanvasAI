@@ -17,6 +17,12 @@ export function useNodeGeneration() {
 
   const generate = useCallback(
     (element: CanvasElement, prompt: string) => {
+      // 前置去重：已在生成中则不重复发起
+      if (generatingKeys.has(element.key)) {
+        return Promise.reject(
+          new Error("该元素正在生成中，请勿重复触发")
+        );
+      }
       setGeneratingKeys((prev) => {
         const next = new Set(prev);
         next.add(element.key);
@@ -32,7 +38,7 @@ export function useNodeGeneration() {
         });
       });
     },
-    []
+    [generatingKeys]
   );
 
   const isGenerating = useCallback(

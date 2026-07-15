@@ -79,6 +79,70 @@ function snippet(text: string, max = 80): string {
   return t.length > max ? t.slice(0, max) + "…" : t;
 }
 
+/** 同义词组：搜任意一个词时自动扩展到组内全部词 */
+const SYNONYM_GROUPS: string[][] = [
+  ["血量", "hp", "health", "生命", "生命值"],
+  ["伤害", "damage", "攻击", "攻击力", "atk", "attack"],
+  ["金币", "gold", "coin", "money", "金钱"],
+  ["经验", "exp", "xp", "experience"],
+  ["防御", "defense", "def", "护甲", "armor"],
+  ["速度", "speed", "移速", "移动速度"],
+  ["暴击", "crit", "critical"],
+  ["等级", "level", "lv", "lvl"],
+  ["冷却", "cooldown", "cd"],
+  ["法力", "mana", "mp", "魔法"],
+  ["力量", "strength", "str"],
+  ["敏捷", "agility", "agi"],
+  ["智力", "intelligence", "int"],
+  ["耐力", "stamina", "sta"],
+  ["奖励", "reward", "掉落", "drop", "loot"],
+  ["敌人", "enemy", "怪物", "monster", "mob"],
+  ["boss", "首领", "Boss", "BOSS"],
+  ["商店", "shop", "store", "交易", "trade"],
+  ["任务", "quest", "mission"],
+  ["对话", "dialogue", "dialog", "talk"],
+  ["技能", "skill", "ability"],
+  ["道具", "item", "物品", "object"],
+  ["武器", "weapon", "arms"],
+  ["地图", "map", "region", "区域"],
+  ["天气", "weather", "climate"],
+  ["音乐", "music", "bgm", "soundtrack"],
+  ["音效", "sfx", "sound", "audio"],
+  ["特效", "fx", "effect", "particle", "vfx"],
+  ["动画", "animation", "anim"],
+  ["镜头", "camera", "视角"],
+  ["惩罚", "penalty", "死亡", "death"],
+  ["资源", "resource", "currency", "货币"],
+  ["属性", "attribute", "stat", "stats"],
+  ["公式", "formula", "equation", "表达式"],
+  ["文档", "document", "gdd", "doc"],
+];
+
+/** 扩展查询：返回原始词 + 所有匹配同义词组中的词 */
+function expandQuery(q: string): string[] {
+  const lower = q.toLowerCase();
+  const terms = [lower];
+  for (const group of SYNONYM_GROUPS) {
+    const matched = group.some(
+      (term) =>
+        term.toLowerCase().includes(lower) || lower.includes(term.toLowerCase())
+    );
+    if (matched) {
+      for (const term of group) {
+        const t = term.toLowerCase();
+        if (!terms.includes(t)) terms.push(t);
+      }
+    }
+  }
+  return terms;
+}
+
+/** 判断文本是否匹配扩展后的查询词集合 */
+function matchAny(text: string, terms: string[]): boolean {
+  const lower = text.toLowerCase();
+  return terms.some((t) => lower.includes(t));
+}
+
 export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   const navigate = useNavigate();
   const { currentProject } = useProjectStore();
@@ -154,17 +218,16 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
     };
   }, [open, currentProject]);
 
-  // 内存中过滤并分组
+  // 内存中过滤并分组（支持同义词扩展）
   const results = useMemo<GroupedResults | null>(() => {
     if (!data || !debouncedQuery) return null;
-    const q = debouncedQuery.toLowerCase();
+    const terms = expandQuery(debouncedQuery);
 
     const nodes: NodeResult[] = data.nodes
       .filter((n) => {
-        const label = n.label.toLowerCase();
-        const desc =
-          (n.data?.description as string | undefined)?.toLowerCase() ?? "";
-        return label.includes(q) || desc.includes(q);
+        const label = n.label;
+        const desc = (n.data?.description as string | undefined) ?? "";
+        return matchAny(label, terms) || matchAny(desc, terms);
       })
       .map((n) => ({
         kind: "node" as const,
@@ -173,14 +236,14 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
       }));
 
     const attributes: AttributeResult[] = data.attributes
-      .filter((a) => a.name.toLowerCase().includes(q))
+      .filter((a) => matchAny(a.name, terms))
       .map((a) => ({ kind: "attribute" as const, attribute: a }));
 
     const sections: SectionResult[] = data.sections
       .filter((s) => {
-        const title = s.title.toLowerCase();
-        const content = stripHtml(s.content).toLowerCase();
-        return title.includes(q) || content.includes(q);
+        return (
+          matchAny(s.title, terms) || matchAny(stripHtml(s.content), terms)
+        );
       })
       .map((s) => ({
         kind: "section" as const,
@@ -189,11 +252,11 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
       }));
 
     const graphs: GraphResult[] = data.graphs
-      .filter((g) => g.name.toLowerCase().includes(q))
+      .filter((g) => matchAny(g.name, terms))
       .map((g) => ({ kind: "graph" as const, graph: g }));
 
     const sheets: SheetResult[] = data.sheets
-      .filter((s) => s.name.toLowerCase().includes(q))
+      .filter((s) => matchAny(s.name, terms))
       .map((s) => ({ kind: "sheet" as const, sheet: s }));
 
     return { nodes, attributes, sections, graphs, sheets };
@@ -223,10 +286,13 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
       0
     : false;
 
-  // 跳转到对应模块
-  const go = (path: "mechanism" | "numeric" | "document") => {
+  // 跳转到对应模块（可携带 focusId 以定位到具体项）
+  const go = (focus?: { id: string; kind: string }) => {
     if (!currentProject) return;
-    navigate(`/project/${currentProject.id}/${path}`);
+    // 统一导航到工作台画布；numeric/document 等独立路由不存在，画布已聚合所有维度
+    navigate(`/project/${currentProject.id}/workspace`, {
+      state: focus ? { focusId: focus.id, focusKind: focus.kind } : undefined,
+    });
     onOpenChange(false);
   };
 
@@ -273,7 +339,7 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
               items={recent.recentGraphs.map((g) => ({
                 id: g.id,
                 title: g.name,
-                onClick: () => go("mechanism"),
+                onClick: () => go(),
               }))}
             />
             <RecentGroup
@@ -282,7 +348,7 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
               items={recent.recentSheets.map((s) => ({
                 id: s.id,
                 title: s.name,
-                onClick: () => go("numeric"),
+                onClick: () => go(),
               }))}
             />
             <RecentGroup
@@ -291,7 +357,7 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
               items={recent.recentDocs.map((d) => ({
                 id: d.id,
                 title: d.name,
-                onClick: () => go("document"),
+                onClick: () => go(),
               }))}
             />
           </div>
@@ -314,7 +380,7 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
                     return (
                       <ResultItem
                         key={`node-${node.id}`}
-                        onClick={() => go("mechanism")}
+                        onClick={() => go({ id: node.id, kind: "node" })}
                         icon={
                           <div
                             className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0 border"
@@ -351,7 +417,7 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
                   {results.attributes.map(({ attribute }) => (
                     <ResultItem
                       key={`attr-${attribute.id}`}
-                      onClick={() => go("numeric")}
+                      onClick={() => go({ id: attribute.id, kind: "attribute" })}
                       icon={
                         <div className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0 bg-canvas-sunken border border-line">
                           <Hash className="w-3 h-3 text-ink-secondary" />
@@ -385,7 +451,7 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
                   {results.sections.map(({ section, docName }) => (
                     <ResultItem
                       key={`sec-${section.id}`}
-                      onClick={() => go("document")}
+                      onClick={() => go({ id: section.id, kind: "section" })}
                       icon={
                         <div className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0 bg-canvas-sunken border border-line">
                           <FileText className="w-3 h-3 text-ink-secondary" />
@@ -412,7 +478,7 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
                   {results.graphs.map(({ graph }) => (
                     <ResultItem
                       key={`graph-${graph.id}`}
-                      onClick={() => go("mechanism")}
+                      onClick={() => go({ id: graph.id, kind: "graph" })}
                       icon={
                         <div className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0 bg-canvas-sunken border border-line">
                           <Network className="w-3 h-3 text-ink-secondary" />
@@ -439,7 +505,7 @@ export default function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) 
                   {results.sheets.map(({ sheet }) => (
                     <ResultItem
                       key={`sheet-${sheet.id}`}
-                      onClick={() => go("numeric")}
+                      onClick={() => go({ id: sheet.id, kind: "sheet" })}
                       icon={
                         <div className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0 bg-canvas-sunken border border-line">
                           <Table className="w-3 h-3 text-ink-secondary" />

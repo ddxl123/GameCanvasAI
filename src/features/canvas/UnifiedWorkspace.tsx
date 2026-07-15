@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useLocation } from "react-router-dom";
 import type { Connection } from "@xyflow/react";
 
 import { useGameplayStore } from "@/stores/gameplayStore";
@@ -331,6 +331,29 @@ export default function UnifiedWorkspace() {
       setSelectedAttribute,
     ]
   );
+
+  // ===== 全局搜索点击定位：读取 router state 聚焦到对应画布元素 =====
+  const location = useLocation();
+  useEffect(() => {
+    const state = location.state as { focusId?: string; focusKind?: string } | null;
+    if (!state?.focusId) return;
+    const { focusId, focusKind } = state;
+
+    // 容器型：切换到对应机制图 / 数值表
+    if (focusKind === "graph") {
+      void selectGraph(focusId);
+      return;
+    }
+    if (focusKind === "sheet") {
+      void selectSheet(focusId);
+      return;
+    }
+
+    // 画布元素型：在 elements 中查找并选中（elements 异步加载完成后会再次触发）
+    const key = `${focusKind}-${focusId}`;
+    const el = elements.find((e) => e.key === key);
+    if (el) handleSelectElement(el);
+  }, [location.state, elements, selectGraph, selectSheet, handleSelectElement]);
 
   // ===== 手动连线回调 =====
   const mechanismAddEdge = useMechanismStore((s) => s.addEdge);

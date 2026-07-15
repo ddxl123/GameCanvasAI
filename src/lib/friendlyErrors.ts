@@ -309,3 +309,44 @@ function detectGraphCycle(
   }
   return false;
 }
+
+/**
+ * 将 AI 调用错误转为用户可读提示。
+ * 覆盖鉴权、余额、限流、服务端、超时、未配置、请求体过大等常见场景。
+ */
+export function explainAIError(error: unknown): { title: string; description?: string } {
+  if (error instanceof Error) {
+    const msg = error.message;
+    // 鉴权
+    if (/\b401\b|\b403\b|API Key|权限/.test(msg)) {
+      return { title: "AI 鉴权失败", description: "API Key 无效或权限不足，请在设置中检查" };
+    }
+    // 余额
+    if (/\b402\b|余额|quota|配额/.test(msg)) {
+      return { title: "AI 余额不足", description: "请充值或更换 Provider" };
+    }
+    // 限流
+    if (/\b429\b|频繁|rate.?limit/i.test(msg)) {
+      return { title: "请求过于频繁", description: "请稍后重试" };
+    }
+    // 服务端
+    if (/\b5\d\d\b|服务.*不可用|server/i.test(msg)) {
+      return { title: "AI 服务暂时不可用", description: "请稍后重试" };
+    }
+    // 超时
+    if (/超时|timeout|AbortError/i.test(msg)) {
+      return { title: "AI 请求超时", description: "请检查网络或稍后重试" };
+    }
+    // 未配置
+    if (/未配置|API Key.*填写|not configured/i.test(msg)) {
+      return { title: "AI 未配置", description: "请在设置中填写 API Key" };
+    }
+    // 请求体过大
+    if (/过大|too large|200KB/i.test(msg)) {
+      return { title: "请求内容过大", description: "请减少上下文数据量后重试" };
+    }
+    // 默认
+    return { title: "AI 调用失败", description: msg.slice(0, 100) };
+  }
+  return { title: "AI 调用失败", description: String(error).slice(0, 100) };
+}

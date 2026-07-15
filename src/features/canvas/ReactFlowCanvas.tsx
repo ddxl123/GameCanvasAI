@@ -9,8 +9,9 @@ import {
   useViewport,
 } from "@xyflow/react";
 import type { Connection, Edge, NodeTypes, OnSelectionChangeParams } from "@xyflow/react";
-import { Copy, Trash2, Star, Plus, Filter, X, Eye, EyeOff } from "lucide-react";
+import { Copy, Trash2, Star, Plus, Filter, X, Eye, EyeOff, ChevronRight } from "lucide-react";
 import { ElementNode, type ElementStatus, getDimensionKey, getSemanticKey, DIMENSION_LABELS, getSemanticLabel } from "./ElementNode";
+import { NODE_LIBRARY, getNodeIcon } from "@/features/mechanism/nodeTypes";
 import { useFlowState } from "./useFlowState";
 import type { CanvasConnection } from "./useFlowState";
 import { CanvasToolbar } from "./CanvasToolbar";
@@ -141,6 +142,8 @@ export default function ReactFlowCanvas({
 
   // 右键菜单状态
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  // 右键菜单中"机制节点"子菜单是否展开（展示 40 种节点子类型）
+  const [mechanismSubmenuOpen, setMechanismSubmenuOpen] = useState(false);
   // 收藏的节点 key 集合（localStorage 持久化）
   const [favorites, setFavorites] = useState<Set<string>>(() => {
     try {
@@ -444,9 +447,9 @@ export default function ReactFlowCanvas({
 
   const pendingDoubleClickPosRef = useRef<{ x: number; y: number } | null>(null);
 
-  // 菜单中点击创建某类型节点
+  // 菜单中点击创建某类型节点（nodeSubtype 为机制节点子类型，如 "event"/"action"）
   const handleMenuCreate = useCallback(
-    (type: CanvasElementType) => {
+    (type: CanvasElementType, nodeSubtype?: string) => {
       const menuPos = pendingDoubleClickPosRef.current;
       if (menuPos) {
         // 双击创建：用双击位置
@@ -454,7 +457,7 @@ export default function ReactFlowCanvas({
         onCreateElementAtRef.current?.(type, {
           x: menuPos.x + offset.x + 130,
           y: menuPos.y + offset.y + 100,
-        });
+        }, nodeSubtype);
       } else if (contextMenu) {
         // 右键创建：用右键位置
         const position = rf.screenToFlowPosition({
@@ -464,9 +467,10 @@ export default function ReactFlowCanvas({
         const offset = getDropOffset(type);
         position.x += offset.x;
         position.y += offset.y;
-        onCreateElementAtRef.current?.(type, position);
+        onCreateElementAtRef.current?.(type, position, nodeSubtype);
       }
       setContextMenu(null);
+      setMechanismSubmenuOpen(false);
       pendingDoubleClickPosRef.current = null;
     },
     [contextMenu, rf]
@@ -869,11 +873,13 @@ export default function ReactFlowCanvas({
             className="fixed inset-0 z-20"
             onClick={() => {
               setContextMenu(null);
+              setMechanismSubmenuOpen(false);
               pendingDoubleClickPosRef.current = null;
             }}
             onContextMenu={(e) => {
               e.preventDefault();
               setContextMenu(null);
+              setMechanismSubmenuOpen(false);
               pendingDoubleClickPosRef.current = null;
             }}
           />
@@ -883,10 +889,11 @@ export default function ReactFlowCanvas({
             onKeyDown={(e) => {
               if (e.key === "Escape") {
                 setContextMenu(null);
+                setMechanismSubmenuOpen(false);
                 pendingDoubleClickPosRef.current = null;
               }
             }}
-            className="fixed z-30 min-w-[140px] rounded-lg border border-line-subtle bg-canvas-elevated shadow-card py-1"
+            className="fixed z-30 min-w-[200px] max-h-[80vh] overflow-y-auto rounded-lg border border-line-subtle bg-canvas-elevated shadow-card py-1"
             style={{
               left: Math.min(contextMenu.x, window.innerWidth - 160),
               top: Math.min(contextMenu.y, window.innerHeight - 200),
@@ -938,17 +945,71 @@ export default function ReactFlowCanvas({
                   <Plus className="w-3 h-3" />
                   创建新节点
                 </div>
-                {ALL_NODE_TYPES.map((item) => (
-                  <button
-                    key={item.type}
-                    type="button"
-                    role="menuitem"
-                    onClick={() => handleMenuCreate(item.type)}
-                    className="w-full flex items-center px-2.5 py-1.5 text-xs text-ink-primary hover:bg-canvas-sunken/60 hover:text-accent transition-colors text-left"
-                  >
-                    {item.label}
-                  </button>
-                ))}
+                {ALL_NODE_TYPES.map((item) => {
+                  // "机制节点"展开为 40 种子类型二级菜单（按 NODE_LIBRARY 维度分组）
+                  if (item.type === "node") {
+                    return (
+                      <div key={item.type}>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => setMechanismSubmenuOpen((v) => !v)}
+                          className="w-full flex items-center gap-1 px-2.5 py-1.5 text-xs text-ink-primary hover:bg-canvas-sunken/60 hover:text-accent transition-colors text-left"
+                        >
+                          <span className="flex-1">{item.label}</span>
+                          <ChevronRight
+                            className={cn(
+                              "w-3 h-3 text-ink-muted transition-transform",
+                              mechanismSubmenuOpen && "rotate-90"
+                            )}
+                          />
+                        </button>
+                        {mechanismSubmenuOpen && (
+                          <div className="border-l border-line-subtle/40 ml-2 my-0.5">
+                            {NODE_LIBRARY.map((group) => (
+                              <div key={group.categoryKey} className="py-0.5">
+                                {/* 维度分组标题 */}
+                                <div className="px-2 py-0.5 text-3xs font-semibold uppercase tracking-wider text-ink-muted">
+                                  {group.category}
+                                </div>
+                                {group.types.map((meta) => {
+                                  const Icon = getNodeIcon(meta.type);
+                                  return (
+                                    <button
+                                      key={meta.type}
+                                      type="button"
+                                      role="menuitem"
+                                      onClick={() => handleMenuCreate("node", meta.type)}
+                                      className="w-full flex items-center gap-1.5 px-2.5 py-1 text-2xs text-ink-primary hover:bg-canvas-sunken/60 hover:text-accent transition-colors text-left"
+                                    >
+                                      <Icon
+                                        className="w-3 h-3 flex-shrink-0"
+                                        style={{ color: meta.color }}
+                                      />
+                                      <span>{meta.label}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+                  // 其余顶层类型直接创建
+                  return (
+                    <button
+                      key={item.type}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => handleMenuCreate(item.type)}
+                      className="w-full flex items-center px-2.5 py-1.5 text-xs text-ink-primary hover:bg-canvas-sunken/60 hover:text-accent transition-colors text-left"
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
               </>
             )}
           </div>

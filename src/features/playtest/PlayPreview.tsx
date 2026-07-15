@@ -255,6 +255,109 @@ function findAttrNumber(
   return null;
 }
 
+// ===== 节点 customFields 玩法属性读取 =====
+
+// 富字段类型定义（与 NodePropertyPanel 保持一致）
+type CustomFieldType =
+  | "text"
+  | "number"
+  | "boolean"
+  | "select"
+  | "range"
+  | "color"
+  | "reference";
+
+interface CustomFieldDef {
+  id: string;
+  key: string;
+  type: CustomFieldType;
+  value: unknown;
+  options?: string[];
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+  referenceType?: "attribute" | "node";
+}
+
+/** 旧格式兼容：把 Record<string,string> 迁移为 CustomFieldDef[] */
+function migrateCustomFields(raw: unknown): CustomFieldDef[] {
+  if (Array.isArray(raw)) return raw as CustomFieldDef[];
+  if (raw && typeof raw === "object") {
+    return Object.entries(raw as Record<string, string>).map(([key, value], i) => ({
+      id: `migrated_${i}_${key}`,
+      key,
+      type: "text" as const,
+      value,
+    }));
+  }
+  return [];
+}
+
+// customFields 专属关键词（中英文模糊匹配）
+const COOLDOWN_FIELD_KEYWORDS = ["cooldown", "cd", "冷却"];
+const DURATION_FIELD_KEYWORDS = ["duration", "持续", "时长", "time"];
+const PROBABILITY_FIELD_KEYWORDS = [
+  "probability",
+  "chance",
+  "概率",
+  "几率",
+  "rate",
+];
+
+/**
+ * 从节点 customFields 中按关键词模糊提取数值（大小写不敏感，支持中英文）。
+ * 例如 "damage"/"伤害"、"hp"/"生命值" 均可命中。
+ * 匹配 number / range / text / select 类型的字段值。
+ */
+function extractField(
+  customFields: CustomFieldDef[],
+  keywords: string[]
+): number | null {
+  if (!customFields || customFields.length === 0) return null;
+  const lowerKeywords = keywords.map((k) => k.toLowerCase());
+  for (const field of customFields) {
+    const key = (field.key || "").toLowerCase();
+    if (!key) continue;
+    if (!lowerKeywords.some((kw) => key.includes(kw))) continue;
+    // number / range 类型直接取值
+    if (field.type === "number" || field.type === "range") {
+      const v =
+        typeof field.value === "number"
+          ? field.value
+          : parseFloat(String(field.value));
+      if (!isNaN(v)) return v;
+    }
+    // text / select 类型尝试解析为数值
+    if (field.type === "text" || field.type === "select") {
+      const v = parseFloat(String(field.value));
+      if (!isNaN(v)) return v;
+    }
+  }
+  return null;
+}
+
+/**
+ * 若节点关联了数值属性（refAttributeId），返回该属性经公式计算后的数值。
+ * 公式不可计算时退化到属性原始值。
+ */
+function getRefAttributeValue(
+  node: GraphNode,
+  computed: Map<string, ComputedAttribute>,
+  attributes: Attribute[]
+): number | null {
+  if (!node.refAttributeId) return null;
+  const c = computed.get(node.refAttributeId);
+  if (c && !c.error && typeof c.value === "number") return c.value;
+  // 退化：直接读属性原始值
+  const attr = attributes.find((a) => a.id === node.refAttributeId);
+  if (attr && attr.type === "number") {
+    const v = parseFloat(attr.value);
+    if (!isNaN(v)) return v;
+  }
+  return null;
+}
+
 /**
  * 从数值表计算结果初始化玩家状态。
  */
@@ -508,18 +611,47 @@ export default function PlayPreview({
   );
 
   // ===== 节点效果处理：经过节点时更新玩家状态 / 日志 / 反馈 =====
+  // 数值解析优先级：customFields 玩法属性 → 关联数值属性（公式计算）→ 数值表关键词 → 默认值
   const applyNodeEffect = useCallback(
     (node: GraphNode, isCurrent: boolean) => {
       if (!isCurrent) return;
       const meta = NODE_TYPE_META[node.type];
       const label = node.label || meta?.label || node.type;
       const p = playerRef.current;
+      // 读取节点玩法属性（customFields），兼容旧格式
+      const customFields = migrateCustomFields(node.data.customFields);
 
       switch (node.type) {
         case "reward": {
-          // 模拟获得奖励：分数 + 经验
-          const scoreGain = 50 + Math.floor(Math.random() * 100);
-          const expGain = 20 + Math.floor(Math.random() * 50);
+          // 奖励值：customFields → 关联数值属性 → 数值表分数 → 默认 50
+          const rewardAmount =
+            extractField(customFields, [
+              "reward",
+              "rewardamount",
+              "分数",
+              "score",
+              "金币",
+              "coin",
+              "value",
+            ]) ??
+            getRefAttributeValue(node, computed, attributes) ??
+            findAttrNumber(computed, attributes, SCORE_KEYWORDS) ??
+            50;
+          // 经验：customFields → 默认奖励值的 40%
+          const expGain =
+            extractField(customFields, ["exp", "experience", "经验"]) ??
+            Math.max(1, Math.round(rewardAmount * 0.4));
+          // 触发概率：默认 100%
+          const probability =
+            extractField(customFields, PROBABILITY_FIELD_KEYWORDS) ?? 1;
+          if (Math.random() > probability) {
+            sound.tick();
+            pushLog(
+              `🎁 经过 [${label}]：奖励未触发（概率 ${Math.round(probability * 100)}%）`,
+              "info"
+            );
+            break;
+          }
           const expThreshold = 100 * p.level;
           const newExp = p.exp + expGain;
           let newLevel = p.level;
@@ -530,12 +662,12 @@ export default function PlayPreview({
           }
           setPlayer((prev) => ({
             ...prev,
-            score: prev.score + scoreGain,
+            score: prev.score + rewardAmount,
             exp: remainExp,
             level: newLevel,
           }));
           const c = getPanelCenter();
-          triggerFloatingText(c.x - 30, c.y, `+${scoreGain} 分`, {
+          triggerFloatingText(c.x - 30, c.y, `+${rewardAmount} 分`, {
             color: "#A3E635",
           });
           triggerFloatingText(c.x + 30, c.y + 8, `+${expGain} EXP`, {
@@ -543,35 +675,89 @@ export default function PlayPreview({
           });
           sound.reward();
           pushLog(
-            `🎁 经过 [${label}]：获得 ${scoreGain} 分数、${expGain} 经验`,
+            `🎁 经过 [${label}]：获得 ${rewardAmount} 分数、${expGain} 经验`,
             "reward"
           );
           break;
         }
         case "penalty": {
-          // 模拟受到惩罚：扣血
-          const dmg = 10 + Math.floor(Math.random() * 20);
+          // 惩罚值：customFields → 关联数值属性 → 默认 15
+          const penaltyAmount =
+            extractField(customFields, [
+              "penalty",
+              "damage",
+              "惩罚",
+              "伤害",
+              "扣血",
+              "dmg",
+              "value",
+            ]) ??
+            getRefAttributeValue(node, computed, attributes) ??
+            15;
+          const probability =
+            extractField(customFields, PROBABILITY_FIELD_KEYWORDS) ?? 1;
+          if (Math.random() > probability) {
+            sound.tick();
+            pushLog(
+              `💀 经过 [${label}]：惩罚未触发（概率 ${Math.round(probability * 100)}%）`,
+              "info"
+            );
+            break;
+          }
           setPlayer((prev) => ({
             ...prev,
-            hp: Math.max(0, prev.hp - dmg),
+            hp: Math.max(0, prev.hp - penaltyAmount),
           }));
           const c = getPanelCenter();
-          triggerFloatingText(c.x, c.y, `-${dmg} HP`, { color: "#F87171" });
+          triggerFloatingText(c.x, c.y, `-${penaltyAmount} HP`, {
+            color: "#F87171",
+          });
           triggerShake();
           sound.hit();
           pushLog(
-            `💀 经过 [${label}]：受到惩罚，损失 ${dmg} 生命值`,
+            `💀 经过 [${label}]：受到惩罚，损失 ${penaltyAmount} 生命值`,
             "penalty"
           );
           break;
         }
         case "enemy": {
-          // 战斗演示：玩家攻击敌人，伤害 = 攻击力 - 防御力 * 0.5
-          const enemyDef = 3 + Math.floor(Math.random() * 8);
+          // 敌人属性：customFields → 关联数值属性 → 数值表关键词 → 默认值
+          const enemyAttack =
+            extractField(customFields, [
+              "attack",
+              "atk",
+              "攻击",
+              "攻击力",
+              "damage",
+              "伤害",
+            ]) ??
+            getRefAttributeValue(node, computed, attributes) ??
+            findAttrNumber(computed, attributes, ATTACK_KEYWORDS) ??
+            5;
+          const enemyHp =
+            extractField(customFields, [
+              "hp",
+              "health",
+              "生命",
+              "血量",
+              "血",
+              "maxhp",
+            ]) ?? 20;
+          const enemyDef =
+            extractField(customFields, [
+              "defense",
+              "def",
+              "防御",
+              "防御力",
+            ]) ??
+            findAttrNumber(computed, attributes, DEFENSE_KEYWORDS) ??
+            3;
+          // 玩家伤害 = 攻击力 - 敌人防御 * 0.5
           const damage = Math.max(1, Math.round(p.attack - enemyDef * 0.5));
+          // 敌人反击 = 敌人攻击 - 玩家防御 * 0.5
           const counterDmg = Math.max(
             0,
-            Math.floor(Math.random() * 12) - Math.floor(p.defense * 0.5)
+            Math.round(enemyAttack - p.defense * 0.5)
           );
           setPlayer((prev) =>
             counterDmg > 0
@@ -591,7 +777,7 @@ export default function PlayPreview({
           sound.hit();
           setCombatCount((n) => n + 1);
           pushLog(
-            `⚔️ 遭遇 [${label}]：玩家攻击造成 ${damage} 伤害` +
+            `⚔️ 遭遇 [${label}]（HP ${enemyHp}）：玩家攻击造成 ${damage} 伤害` +
               (counterDmg > 0 ? `，敌人反击造成 ${counterDmg} 伤害` : ""),
             "combat"
           );
@@ -604,7 +790,12 @@ export default function PlayPreview({
         }
         default: {
           sound.tick();
-          // 通用：记录节点经过
+          // 通用：记录节点经过 + 冷却/持续/概率提示
+          const cooldown = extractField(customFields, COOLDOWN_FIELD_KEYWORDS);
+          const duration = extractField(customFields, DURATION_FIELD_KEYWORDS);
+          const extras: string[] = [];
+          if (cooldown != null) extras.push(`冷却 ${cooldown}`);
+          if (duration != null) extras.push(`持续 ${duration}`);
           if (
             node.type === "event" ||
             node.type === "trigger_zone" ||
@@ -612,13 +803,22 @@ export default function PlayPreview({
             node.type === "state" ||
             node.type === "condition"
           ) {
-            pushLog(`▸ ${meta?.label ?? node.type}：${label}`, "info");
+            const extraStr =
+              extras.length > 0 ? `（${extras.join(" · ")}）` : "";
+            pushLog(`▸ ${meta?.label ?? node.type}：${label}${extraStr}`, "info");
           }
           break;
         }
       }
     },
-    [pushLog, getPanelCenter, triggerFloatingText, triggerShake]
+    [
+      pushLog,
+      getPanelCenter,
+      triggerFloatingText,
+      triggerShake,
+      computed,
+      attributes,
+    ]
   );
 
   // ===== 升级检测（独立副作用，避免在 setState updater 中触发副作用）=====
@@ -998,8 +1198,11 @@ export default function PlayPreview({
             </div>
             <div className="flex-1 overflow-auto px-4 py-2 space-y-1">
               {logs.length === 0 ? (
-                <div className="text-2xs text-ink-muted text-center py-6">
-                  点击播放开始机制验证
+                <div className="text-2xs text-ink-muted text-center py-6 space-y-1">
+                  <div>点击播放开始机制验证</div>
+                  <div className="text-3xs opacity-70">
+                    试玩沙盒基于当前节点属性和数值公式进行推演，结果仅供参考。
+                  </div>
                 </div>
               ) : (
                 logs.map((log) => (

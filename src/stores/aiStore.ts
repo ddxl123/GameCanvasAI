@@ -12,7 +12,7 @@ interface AIState {
   defaultModel: AIProvider;
   isGenerating: boolean;
   lastError: string | null;
-  abortController: AbortController | null;
+  abortControllers: Map<string, AbortController>;
 
   loadConfigs: () => void;
   updateConfig: (provider: AIProvider, updates: Partial<AIConfig>) => void;
@@ -20,8 +20,12 @@ interface AIState {
   setIsGenerating: (generating: boolean) => void;
   setLastError: (error: string | null) => void;
   getActiveConfig: () => AIConfig | null;
-  setAbortController: (c: AbortController | null) => void;
-  /** 中止当前正在进行的 AI 请求 */
+  setAbortController: (key: string, c: AbortController | null) => void;
+  /** 按 key 中止指定调用源的 AI 请求 */
+  abortByKey: (key: string) => void;
+  /** 中止所有正在进行的 AI 请求 */
+  abortAll: () => void;
+  /** 兼容层：中止当前所有 AI 请求（映射到 abortAll） */
   abortCurrent: () => void;
 }
 
@@ -30,7 +34,7 @@ export const useAIStore = create<AIState>((set, get) => ({
   defaultModel: loadSettings().defaultModel,
   isGenerating: false,
   lastError: null,
-  abortController: null,
+  abortControllers: new Map(),
 
   loadConfigs: () => {
     set({
@@ -73,11 +77,30 @@ export const useAIStore = create<AIState>((set, get) => ({
     return null;
   },
 
-  setAbortController: (c) => set({ abortController: c }),
+  setAbortController: (key, c) =>
+    set((s) => {
+      const next = new Map(s.abortControllers);
+      if (c === null) next.delete(key);
+      else next.set(key, c);
+      return { abortControllers: next };
+    }),
+
+  abortByKey: (key) => {
+    const c = get().abortControllers.get(key);
+    c?.abort();
+    set((s) => {
+      const next = new Map(s.abortControllers);
+      next.delete(key);
+      return { abortControllers: next };
+    });
+  },
+
+  abortAll: () => {
+    get().abortControllers.forEach((c) => c.abort());
+    set({ abortControllers: new Map() });
+  },
 
   abortCurrent: () => {
-    const { abortController } = get();
-    abortController?.abort();
-    set({ abortController: null });
+    get().abortAll();
   },
 }));

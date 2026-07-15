@@ -22,7 +22,8 @@ import type {
 
 /**
  * AI Agent 设计动作定义。
- * 使用 OpenAI 兼容的 function calling（tools）让模型调用对应工具提交结构化设计。
+ * 使用 OpenAI 兼容的 Tool Calls（tools 参数 + tool_calls 返回）让模型调用对应工具提交结构化设计。
+ * 参考：https://api-docs.deepseek.com/zh-cn/guides/tool_calls
  */
 
 // ===== 动作数据结构 =====
@@ -251,6 +252,49 @@ const EDGE_TYPES_ENUM = [
   "oppose",
 ];
 const ATTR_TYPES_ENUM = ["number", "string", "bool"];
+
+// ===== 工具参数 required 字段校验 =====
+
+/** 轻量 required 字段校验，返回缺失字段列表（空数组表示通过） */
+function checkRequired(args: Record<string, unknown>, required: string[]): string[] {
+  return required.filter((k) => {
+    const v = args[k];
+    if (v === undefined || v === null) return true;
+    if (typeof v === "string" && v.trim() === "") return true;
+    if (Array.isArray(v) && v.length === 0) return true;
+    return false;
+  });
+}
+
+/** 校验结果：成功返回 { ok: true, action }，失败返回 { ok: false, error } */
+export type ToolCallParseResult =
+  | { ok: true; action: DesignAction | DimensionAction }
+  | { ok: false; error: string };
+
+/** 校验工具参数 required 字段，返回错误描述（null 表示通过） */
+export function validateActionArgs(
+  toolName: string,
+  args: Record<string, unknown>
+): string | null {
+  const checks: Record<string, string[]> = {
+    apply_mechanism: ["nodes"],
+    apply_numeric: ["attributes"],
+    apply_gdd: ["sections"],
+    update_node: ["nodeLabel", "updates"],
+    remove_node: ["nodeLabel"],
+    add_node_to_existing: ["nodes"],
+    patch_formula: ["attributeName"],
+    apply_loops: ["loops"],
+    apply_moments: ["moments"],
+    apply_rules: ["rules"],
+    apply_level_flow: ["name", "nodes"],
+  };
+  const required = checks[toolName];
+  if (!required) return null;
+  const missing = checkRequired(args, required);
+  if (missing.length === 0) return null;
+  return `${toolName} 缺少必填字段: ${missing.join(", ")}`;
+}
 
 /**
  * 三个生成类工具的 OpenAI 兼容定义。
@@ -825,6 +869,11 @@ export function actionFromToolCall(
   toolName: string,
   args: Record<string, unknown>
 ): DesignAction | null {
+  const error = validateActionArgs(toolName, args);
+  if (error) {
+    console.warn(`[actionFromToolCall] ${error}`);
+    return null;
+  }
   switch (toolName) {
     case "apply_mechanism":
       return {
@@ -882,6 +931,11 @@ export function dimensionActionFromToolCall(
   toolName: string,
   args: Record<string, unknown>
 ): DimensionAction | null {
+  const error = validateActionArgs(toolName, args);
+  if (error) {
+    console.warn(`[dimensionActionFromToolCall] ${error}`);
+    return null;
+  }
   switch (toolName) {
     case "apply_loops":
       return {

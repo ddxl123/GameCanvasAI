@@ -3,6 +3,7 @@ import { Project, ProjectTemplate } from "@/types";
 import { formatRelativeTime } from "@/lib/time";
 import { exportProject } from "@/lib/projectExport";
 import { useUIStore } from "@/stores/uiStore";
+import { db } from "@/db";
 import {
   Swords,
   Coins,
@@ -13,7 +14,7 @@ import {
   ChevronRight,
   Download,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 // 模板配置：每个模板像游戏里的一个"职业/难度"，有独立色彩与氛围
 const templateConfig: Record<
@@ -73,6 +74,84 @@ export default function ProjectCard({ project, onDelete }: ProjectCardProps) {
   const addToast = useUIStore((s) => s.addToast);
   const config = templateConfig[project.template];
   const Icon = config.icon;
+
+  const [progress, setProgress] = useState(0);
+
+  // 异步从 IndexedDB 计算项目真实完成度（6 个维度）
+  useEffect(() => {
+    let cancelled = false;
+    const compute = async () => {
+      try {
+        // 1 & 2. 机制图 + 节点 / 边
+        const graphs = await db.mechanismGraphs
+          .where("projectId")
+          .equals(project.id)
+          .toArray();
+        const graphIds = graphs.map((g) => g.id);
+        let nodeCount = 0;
+        let edgeCount = 0;
+        for (const gid of graphIds) {
+          nodeCount += await db.graphNodes.where("graphId").equals(gid).count();
+          edgeCount += await db.graphEdges.where("graphId").equals(gid).count();
+        }
+        const dimGraphWithNode = graphs.length >= 1 && nodeCount >= 1;
+        const dimEdge = edgeCount >= 1;
+
+        // 3 & 4. 数值属性 / 公式
+        const sheets = await db.numericSheets
+          .where("projectId")
+          .equals(project.id)
+          .toArray();
+        const sheetIds = sheets.map((s) => s.id);
+        let attrCount = 0;
+        let formulaCount = 0;
+        for (const sid of sheetIds) {
+          attrCount += await db.attributes.where("sheetId").equals(sid).count();
+          formulaCount += await db.formulas.where("sheetId").equals(sid).count();
+        }
+        const dimAttribute = attrCount >= 1;
+        const dimFormula = formulaCount >= 1;
+
+        // 5. GDD 文档 + 段落
+        const docs = await db.gddDocuments
+          .where("projectId")
+          .equals(project.id)
+          .toArray();
+        const docIds = docs.map((d) => d.id);
+        let sectionCount = 0;
+        for (const did of docIds) {
+          sectionCount += await db.docSections.where("docId").equals(did).count();
+        }
+        const dimGdd = docs.length >= 1 && sectionCount >= 1;
+
+        // 6. AI 对话
+        const aiCount = await db.aiConversations
+          .where("projectId")
+          .equals(project.id)
+          .count();
+        const dimAi = aiCount >= 1;
+
+        const completed = [
+          dimGraphWithNode,
+          dimEdge,
+          dimAttribute,
+          dimFormula,
+          dimGdd,
+          dimAi,
+        ].filter(Boolean).length;
+
+        if (!cancelled) {
+          setProgress(Math.round((completed / 6) * 100));
+        }
+      } catch (e) {
+        console.error("ProjectCard 完成度计算失败:", e);
+      }
+    };
+    void compute();
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
 
   const handleClick = () => {
     navigate(`/project/${project.id}/mechanism`);
@@ -227,22 +306,22 @@ export default function ProjectCard({ project, onDelete }: ProjectCardProps) {
           {project.description || "暂无描述"}
         </p>
 
-        {/* 底部色条 —— 模板标识 */}
+        {/* 底部色条 —— 项目完成度 */}
         <div className="mt-3 flex items-center gap-2">
           <div className="flex-1 h-1 rounded-full bg-canvas-sunken overflow-hidden">
             <div
-              className="h-full rounded-full transition-all group-hover:w-full"
+              className="h-full rounded-full transition-all duration-500"
               style={{
-                width: "60%",
+                width: `${progress}%`,
                 background: config.gradient,
               }}
             />
           </div>
           <span
-            className="text-2xs font-medium"
+            className="text-2xs font-medium tabular-nums"
             style={{ color: config.color }}
           >
-            {config.label}
+            {progress}%
           </span>
         </div>
       </div>

@@ -37,7 +37,8 @@ import CaseLibraryDialog from "@/features/project/CaseLibraryDialog";
 import GuidedCreationWizard from "@/features/onboarding/GuidedCreationWizard";
 import InspirationBoard from "@/features/inspiration/InspirationBoard";
 import { createHelloWorldProject } from "@/data/helloWorldTemplate";
-import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import Modal from "@/components/ui/Modal";
+import OnboardingChecklist from "@/features/onboarding/OnboardingChecklist";
 
 // 能力标签数据
 const FEATURES = [
@@ -123,6 +124,7 @@ export default function Home() {
   const [view, setView] = useState<"grid" | "list">("grid");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [deleteInput, setDeleteInput] = useState("");
 
   useEffect(() => {
     loadProjects();
@@ -161,14 +163,24 @@ export default function Home() {
 
   const handleDelete = (id: string) => {
     setPendingDeleteId(id);
+    setDeleteInput("");
     setDeleteConfirmOpen(true);
   };
 
+  const pendingDeleteProject = useMemo(
+    () => projects.find((p) => p.id === pendingDeleteId) ?? null,
+    [projects, pendingDeleteId]
+  );
+  const canConfirmDelete =
+    !!pendingDeleteProject &&
+    deleteInput.trim() === pendingDeleteProject.name;
+
   const confirmDelete = async () => {
-    if (!pendingDeleteId) return;
+    if (!pendingDeleteId || !canConfirmDelete) return;
     const id = pendingDeleteId;
     setDeleteConfirmOpen(false);
     setPendingDeleteId(null);
+    setDeleteInput("");
     try {
       await deleteProject(id);
       addToast({ title: "项目已删除", variant: "success" });
@@ -239,7 +251,7 @@ export default function Home() {
                 玩法设计平台
               </span>
               <span className="font-pixel text-[8px] text-accent leading-tight tracking-wider">
-                GAME DESIGN WORKBENCH
+                GAMECANVASAI
               </span>
             </div>
           </div>
@@ -283,7 +295,7 @@ export default function Home() {
             从灵感到完整 GDD 的一体化工作台。
             <span className="text-accent">可视化机制网络</span>、
             <span className="text-cyan-400">数值平衡公式引擎</span>、
-            <span className="text-purple-400">AI 自动生成设计稿</span>、
+            <span className="text-purple-400">模板化快速起步</span>、
             <span className="text-pink-400">结构化 GDD 文档</span>
             —— 让设计过程像玩游戏一样有趣。
           </p>
@@ -299,7 +311,7 @@ export default function Home() {
               }}
             >
               <Rocket className="w-4 h-4" strokeWidth={2.5} />
-              <span className="font-semibold">引导式创作</span>
+              <span className="font-semibold">模板引导创作</span>
               <ChevronRight className="w-4 h-4" strokeWidth={2.5} />
             </button>
             <button
@@ -528,17 +540,91 @@ export default function Home() {
       <CaseLibraryDialog open={caseLibraryOpen} onOpenChange={setCaseLibraryOpen} />
       <GuidedCreationWizard open={wizardOpen} onOpenChange={setWizardOpen} />
       <InspirationBoard open={inspirationOpen} onOpenChange={setInspirationOpen} />
-      <ConfirmDialog
+      {/* 删除项目：输入名称二次确认 */}
+      <Modal
         open={deleteConfirmOpen}
-        title="删除项目"
-        description="确定删除该项目及其所有数据？此操作不可撤销。"
-        variant="danger"
-        onConfirm={() => void confirmDelete()}
-        onCancel={() => {
-          setDeleteConfirmOpen(false);
-          setPendingDeleteId(null);
+        onOpenChange={(v) => {
+          setDeleteConfirmOpen(v);
+          if (!v) {
+            setPendingDeleteId(null);
+            setDeleteInput("");
+          }
         }}
-      />
+        title="确认删除项目"
+        description="此操作不可撤销。请输入项目名称以确认删除。"
+      >
+        {pendingDeleteProject && (
+          <div className="space-y-3">
+            <div className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
+              <div className="text-2xs text-ink-muted uppercase tracking-wider mb-0.5">
+                将删除
+              </div>
+              <div className="text-sm font-semibold text-ink-primary">
+                {pendingDeleteProject.name}
+              </div>
+              <div className="text-2xs text-ink-muted mt-0.5">
+                {pendingDeleteProject.description || "暂无描述"}
+              </div>
+            </div>
+            <div>
+              <label className="text-2xs text-ink-muted block mb-1">
+                请输入项目名称{" "}
+                <span className="text-ink-secondary font-medium">
+                  「{pendingDeleteProject.name}」
+                </span>{" "}
+                以确认
+              </label>
+              <input
+                type="text"
+                value={deleteInput}
+                onChange={(e) => setDeleteInput(e.target.value)}
+                autoFocus
+                placeholder={pendingDeleteProject.name}
+                className="input-field"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && canConfirmDelete) {
+                    void confirmDelete();
+                  }
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                onClick={() => {
+                  setDeleteConfirmOpen(false);
+                  setPendingDeleteId(null);
+                  setDeleteInput("");
+                }}
+                className="btn-ghost"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => void confirmDelete()}
+                disabled={!canConfirmDelete}
+                className={cn(
+                  "btn-primary",
+                  !canConfirmDelete &&
+                    "opacity-40 cursor-not-allowed"
+                )}
+                style={{
+                  background: canConfirmDelete
+                    ? "linear-gradient(135deg, #EF4444, #DC2626)"
+                    : undefined,
+                  border: canConfirmDelete
+                    ? "1px solid rgba(239,68,68,0.5)"
+                    : undefined,
+                }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                确认删除
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+      {/* 新手任务清单（全局一次性，首页挂载） */}
+      <OnboardingChecklist />
     </div>
   );
 }

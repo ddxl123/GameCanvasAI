@@ -37,7 +37,7 @@ const providerConfig: Record<
   },
   deepseek: {
     label: "DeepSeek",
-    models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+    models: ["deepseek-chat", "deepseek-reasoner"],
     description: "深度求索，性价比高，支持思考模式",
   },
 };
@@ -56,6 +56,9 @@ export default function Settings() {
 
   const handleSaveKey = (provider: AIProvider, apiKey: string) => {
     updateConfig(provider, { apiKey, enabled: !!apiKey });
+  };
+
+  const handleSaveKeyBlur = (provider: AIProvider) => {
     addToast({
       title: `${providerConfig[provider].label} 配置已保存`,
       variant: "success",
@@ -101,7 +104,7 @@ export default function Settings() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `game-design-backup-${Date.now()}.json`;
+      a.download = `gamecanvasai-backup-${Date.now()}.json`;
       a.click();
       URL.revokeObjectURL(url);
       addToast({ title: "数据导出成功", variant: "success" });
@@ -219,6 +222,7 @@ export default function Settings() {
                           onChange={(e) =>
                             handleSaveKey(provider, e.target.value)
                           }
+                          onBlur={() => handleSaveKeyBlur(provider)}
                           placeholder="sk-..."
                           className="input-field pr-9 font-mono text-xs"
                         />

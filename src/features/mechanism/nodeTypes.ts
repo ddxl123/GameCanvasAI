@@ -327,7 +327,7 @@ export const NODE_TYPE_META: Record<NodeType, NodeTypeMeta> = {
     icon: "music",
     color: "#A855F7", // 浅紫
     description: "BGM 切换/动态音乐，如：战斗音乐、探索音乐、Boss 主题曲",
-    ports: { inputs: 1, outputs: 0 },
+    ports: { inputs: 1, outputs: 1 },
   },
   sfx: {
     type: "sfx",
@@ -336,7 +336,7 @@ export const NODE_TYPE_META: Record<NodeType, NodeTypeMeta> = {
     icon: "volume-2",
     color: "#3B82F6", // 蓝
     description: "事件音效，如：攻击音、UI 音、环境音、脚步声",
-    ports: { inputs: 1, outputs: 0 },
+    ports: { inputs: 1, outputs: 1 },
   },
   fx: {
     type: "fx",
@@ -345,7 +345,7 @@ export const NODE_TYPE_META: Record<NodeType, NodeTypeMeta> = {
     icon: "sparkles",
     color: "#F472B6", // 粉
     description: "视觉特效，如：粒子、震屏、慢动作、闪光、命中特效",
-    ports: { inputs: 1, outputs: 0 },
+    ports: { inputs: 1, outputs: 1 },
   },
   animation: {
     type: "animation",
@@ -354,7 +354,7 @@ export const NODE_TYPE_META: Record<NodeType, NodeTypeMeta> = {
     icon: "clapperboard",
     color: "#F97316", // 橙
     description: "角色动画，如：攻击动画、待机、死亡、技能动画",
-    ports: { inputs: 1, outputs: 0 },
+    ports: { inputs: 1, outputs: 1 },
   },
   camera: {
     type: "camera",
@@ -363,7 +363,7 @@ export const NODE_TYPE_META: Record<NodeType, NodeTypeMeta> = {
     icon: "video",
     color: "#14B8A6", // 青绿
     description: "镜头语言，如：特写、跟随、震动、转场、慢镜头",
-    ports: { inputs: 1, outputs: 0 },
+    ports: { inputs: 1, outputs: 1 },
   },
   ui: {
     type: "ui",
@@ -372,7 +372,7 @@ export const NODE_TYPE_META: Record<NodeType, NodeTypeMeta> = {
     icon: "layout-grid",
     color: "#64748B", // 石板灰
     description: "界面元素，如：HUD、菜单、提示框、小地图、伤害数字",
-    ports: { inputs: 1, outputs: 0 },
+    ports: { inputs: 1, outputs: 1 },
   },
 
   // ===== 系统机制层 =====
@@ -828,6 +828,93 @@ export const NODE_LIBRARY = [
   {
     category: "感官体验",
     categoryKey: "sensory" as const,
+    types: (["music", "sfx", "fx", "animation", "camera", "ui"] as NodeType[]).map(
+      (t) => NODE_TYPE_META[t]
+    ),
+  },
+  {
+    category: "辅助",
+    categoryKey: "aux" as const,
+    types: (["note"] as NodeType[]).map((t) => NODE_TYPE_META[t]),
+  },
+];
+
+/**
+ * 玩法设计师视角的节点库分组（NODE_LIBRARY_BY_GAMEPLAY）
+ *
+ * 按玩法设计师的思维习惯重新归类，不增删节点，仅重新分组：
+ * - 战斗系统：玩法流程骨架（事件/行为/条件/状态）+ 战斗单位 + 技能 + AI/社交
+ * - 成长系统：属性成长 + 修饰 + 等级 + 反馈循环（奖励/惩罚/反馈）
+ * - 经济系统：资源流转（资源/池/转换器）+ 交易（商店/道具）
+ * - 任务与叙事：任务链 + 对话 + 地标
+ * - 关卡与探索：世界结构 + 系统机制（区域/路径/天气/群落/触发区/生成器/存档点/难度/计时器/随机）
+ * - 表现层：感官反馈（音乐/音效/特效/动画/镜头/UI）
+ * - 辅助：设计注解
+ *
+ * 说明：原分组建议中的 "npc" 在 NODE_TYPE_META 中不存在（最接近的 character 已归入战斗系统）；
+ * 同时 "social"（社交：组队/PvP/交易/排行榜/公会）未被原建议覆盖，此处归入"战斗系统"，
+ * 因为 PvP 与组队战斗是社交类型中最具系统性的玩法机制。由此保证 40 种节点全量覆盖。
+ */
+export const NODE_LIBRARY_BY_GAMEPLAY = [
+  {
+    category: "战斗系统",
+    categoryKey: "combat" as const,
+    types: (
+      [
+        "event",
+        "action",
+        "condition",
+        "state",
+        "enemy",
+        "character",
+        "skill",
+        "ai_behavior",
+        "social",
+      ] as NodeType[]
+    ).map((t) => NODE_TYPE_META[t]),
+  },
+  {
+    category: "成长系统",
+    categoryKey: "growth" as const,
+    types: (
+      ["attribute", "modifier", "level", "reward", "penalty", "feedback"] as NodeType[]
+    ).map((t) => NODE_TYPE_META[t]),
+  },
+  {
+    category: "经济系统",
+    categoryKey: "economy" as const,
+    types: (["resource", "pool", "converter", "shop", "item"] as NodeType[]).map(
+      (t) => NODE_TYPE_META[t]
+    ),
+  },
+  {
+    category: "任务与叙事",
+    categoryKey: "narrative" as const,
+    types: (["quest", "dialogue", "landmark"] as NodeType[]).map(
+      (t) => NODE_TYPE_META[t]
+    ),
+  },
+  {
+    category: "关卡与探索",
+    categoryKey: "exploration" as const,
+    types: (
+      [
+        "region",
+        "path",
+        "weather",
+        "biome",
+        "trigger_zone",
+        "spawner",
+        "savepoint",
+        "difficulty",
+        "timer",
+        "rng",
+      ] as NodeType[]
+    ).map((t) => NODE_TYPE_META[t]),
+  },
+  {
+    category: "表现层",
+    categoryKey: "presentation" as const,
     types: (["music", "sfx", "fx", "animation", "camera", "ui"] as NodeType[]).map(
       (t) => NODE_TYPE_META[t]
     ),

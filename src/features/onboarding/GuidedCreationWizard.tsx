@@ -138,6 +138,20 @@ const GAME_TYPES: GameTypeOption[] = [
 
 const STEP_LABELS = ["游戏类型", "核心玩法", "目标与机制", "确认生成"];
 
+/** 第 4 步预览项目名，允许用户在生成前修改 */
+function PreviewProjectName({
+  coreGameplay,
+}: {
+  coreGameplay: string;
+}) {
+  const preview = extractProjectName(coreGameplay);
+  return (
+    <div className="text-2xs text-ink-muted">
+      预览项目名：<span className="text-ink-primary font-medium">{preview}</span>
+    </div>
+  );
+}
+
 const CORE_GAMEPLAY_EXAMPLES = [
   "玩家在末世收集记忆碎片解锁身世",
   "控制小球在赛道上躲避障碍抵达终点",
@@ -670,7 +684,7 @@ export default function GuidedCreationWizard({
         onOpenChange(next);
       }}
       title="引导式创作"
-      description="回答几个问题，自动生成设计骨架"
+      description="回答几个问题，基于模板生成设计骨架"
       className="max-w-2xl"
     >
       {/* 步骤指示器 */}
@@ -830,6 +844,9 @@ export default function GuidedCreationWizard({
               label="独特机制"
               value={uniqueMechanic.trim() || "未填写"}
             />
+            <div className="pt-3 mt-1 border-t border-line">
+              <PreviewProjectName coreGameplay={coreGameplay} />
+            </div>
             {skeleton && (
               <div className="text-2xs text-ink-muted pt-3 mt-1 border-t border-line leading-relaxed">
                 将生成：1 个机制图（{skeleton.nodes.length} 节点 /{" "}

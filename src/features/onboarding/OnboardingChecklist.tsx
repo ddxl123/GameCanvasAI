@@ -88,17 +88,18 @@ const CONFETTI_COLORS = [
 export default function OnboardingChecklist({
   projectId,
 }: {
-  projectId: string;
+  /** 可选：传入则按项目范围检查；不传则全局聚合（首页挂载时） */
+  projectId?: string;
 }) {
   const navigate = useNavigate();
   const addToast = useUIStore((s) => s.addToast);
   const setAIPanelOpen = useUIStore((s) => s.setAIPanelOpen);
 
-  // localStorage 键
-  const dismissedKey = `onboarding_dismissed_${projectId}`;
-  const collapsedKey = `onboarding_collapsed_${projectId}`;
-  const exportKey = `onboarding_exported_${projectId}`;
-  const celebratedKey = `onboarding_celebrated_${projectId}`;
+  // localStorage 键（全局一次性：完成或关闭后所有项目都不再展示）
+  const dismissedKey = `onboarding_dismissed_global`;
+  const collapsedKey = `onboarding_collapsed_global`;
+  const exportKey = `onboarding_exported_global`;
+  const celebratedKey = `onboarding_celebrated_global`;
 
   const [dismissed, setDismissed] = useState(
     () => localStorage.getItem(dismissedKey) === "true"
@@ -110,18 +111,19 @@ export default function OnboardingChecklist({
   const [status, setStatus] = useState<TaskStatus>(EMPTY_STATUS);
   const [showCelebration, setShowCelebration] = useState(false);
 
-  // ===== 检查各表数据量 =====
+  // ===== 检查各表数据量（全局聚合或限定项目） =====
   const checkTasks = useCallback(async () => {
     try {
       // 1. 项目存在
-      const project = await db.projects.get(projectId);
-      const projectCreated = !!project;
+      const allProjects = projectId
+        ? await db.projects.where("id").equals(projectId).toArray()
+        : await db.projects.toArray();
+      const projectCreated = allProjects.length > 0;
 
       // 2 & 3. 机制图 + 节点 + 边
-      const graphs = await db.mechanismGraphs
-        .where("projectId")
-        .equals(projectId)
-        .toArray();
+      const graphs = projectId
+        ? await db.mechanismGraphs.where("projectId").equals(projectId).toArray()
+        : await db.mechanismGraphs.toArray();
       const graphIds = graphs.map((g) => g.id);
       let nodeCount = 0;
       let edgeCount = 0;
@@ -133,10 +135,9 @@ export default function OnboardingChecklist({
       const edgeCreated = edgeCount >= 1;
 
       // 4 & 5. 数值表 + 属性 + 公式
-      const sheets = await db.numericSheets
-        .where("projectId")
-        .equals(projectId)
-        .toArray();
+      const sheets = projectId
+        ? await db.numericSheets.where("projectId").equals(projectId).toArray()
+        : await db.numericSheets.toArray();
       const sheetIds = sheets.map((s) => s.id);
       let attrCount = 0;
       let formulaCount = 0;
@@ -148,10 +149,9 @@ export default function OnboardingChecklist({
       const formulaCreated = formulaCount >= 1;
 
       // 6. GDD 文档 + 段落
-      const docs = await db.gddDocuments
-        .where("projectId")
-        .equals(projectId)
-        .toArray();
+      const docs = projectId
+        ? await db.gddDocuments.where("projectId").equals(projectId).toArray()
+        : await db.gddDocuments.toArray();
       const docIds = docs.map((d) => d.id);
       let sectionCount = 0;
       for (const did of docIds) {
@@ -160,10 +160,9 @@ export default function OnboardingChecklist({
       const gddWithSection = docs.length >= 1 && sectionCount >= 1;
 
       // 7. AI 对话
-      const aiCount = await db.aiConversations
-        .where("projectId")
-        .equals(projectId)
-        .count();
+      const aiCount = projectId
+        ? await db.aiConversations.where("projectId").equals(projectId).count()
+        : await db.aiConversations.count();
       const aiConversation = aiCount >= 1;
 
       // 8. 导出（localStorage 记录是否点击过导出）
@@ -230,10 +229,24 @@ export default function OnboardingChecklist({
     setCollapsed(next);
   };
 
+  /** 获取最近编辑的项目 id（无 projectId 时用于跳转） */
+  const getRecentProjectId = useCallback(async (): Promise<string | null> => {
+    if (projectId) return projectId;
+    const all = await db.projects.toArray();
+    if (all.length === 0) return null;
+    all.sort((a, b) => b.updatedAt - a.updatedAt);
+    return all[0].id;
+  }, [projectId]);
+
   const handleExport = async () => {
     try {
+      const targetId = await getRecentProjectId();
+      if (!targetId) {
+        addToast({ title: "请先创建一个项目", variant: "warning" });
+        return;
+      }
       const { exportProject } = await import("@/lib/projectExport");
-      await exportProject(projectId);
+      await exportProject(targetId);
       localStorage.setItem(exportKey, "true");
       addToast({ title: "项目已导出", variant: "success" });
     } catch (e) {
@@ -246,9 +259,24 @@ export default function OnboardingChecklist({
     void checkTasks();
   };
 
-  const handleAI = () => {
-    navigate(`/project/${projectId}/mechanism`);
+  const handleAI = async () => {
+    const targetId = await getRecentProjectId();
+    if (!targetId) {
+      addToast({ title: "请先创建一个项目", variant: "warning" });
+      return;
+    }
+    navigate(`/project/${targetId}/mechanism`);
     setAIPanelOpen(true);
+  };
+
+  /** 跳转到最近项目的机制页（或回首页创建） */
+  const goToMechanism = async () => {
+    const targetId = await getRecentProjectId();
+    if (targetId) {
+      navigate(`/project/${targetId}/mechanism`);
+    } else {
+      navigate("/");
+    }
   };
 
   const tasks: TaskDef[] = [
@@ -264,35 +292,35 @@ export default function OnboardingChecklist({
       label: "画第一张机制图",
       description: "创建至少 1 个机制图，含至少 1 个节点",
       icon: Network,
-      action: () => navigate(`/project/${projectId}/mechanism`),
+      action: goToMechanism,
     },
     {
       key: "edgeCreated",
       label: "连接两个节点",
       description: "创建至少 1 条边",
       icon: GitBranch,
-      action: () => navigate(`/project/${projectId}/mechanism`),
+      action: goToMechanism,
     },
     {
       key: "attributeCreated",
       label: "添加数值属性",
       description: "创建至少 1 个属性",
       icon: Calculator,
-      action: () => navigate(`/project/${projectId}/numeric`),
+      action: goToMechanism,
     },
     {
       key: "formulaCreated",
       label: "编写第一个公式",
       description: "创建至少 1 个公式",
       icon: FunctionSquare,
-      action: () => navigate(`/project/${projectId}/numeric`),
+      action: goToMechanism,
     },
     {
       key: "gddWithSection",
       label: "生成 GDD 文档",
       description: "创建至少 1 个 GDD 文档，含至少 1 个段落",
       icon: FileText,
-      action: () => navigate(`/project/${projectId}/document`),
+      action: goToMechanism,
     },
     {
       key: "aiConversation",

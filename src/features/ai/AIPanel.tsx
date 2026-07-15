@@ -6,7 +6,7 @@ import { useNumericStore } from "@/stores/numericStore";
 import { useDocumentStore } from "@/stores/documentStore";
 import { useUIStore } from "@/stores/uiStore";
 import { useChatStore } from "@/stores/chatStore";
-import { callAIStream } from "@/lib/aiClient";
+import { callAIStream, trimMessages } from "@/lib/aiClient";
 import {
   buildMechanismGenPrompt,
   buildMechanismReviewPrompt,
@@ -37,6 +37,7 @@ import {
   Square,
   Wand,
   Check,
+  X,
   MessageSquare,
   Undo2,
   Plus,
@@ -181,6 +182,8 @@ interface ChatItem {
   reasoning?: string;
   // 自动应用的 tool call 记录（每个可单独撤销）
   appliedRecords?: AppliedRecord[];
+  // 待用户确认的 tool call 预览列表（不立即应用，先预览）
+  pendingToolCalls?: PendingToolCall[];
 }
 
 /** 单次 tool call 的自动应用记录，可单独撤销 */
@@ -194,8 +197,57 @@ interface AppliedRecord {
   undone?: boolean;
 }
 
+/** 待应用 tool call 的预览项（收集后等待用户确认，不立即写入画布） */
+interface PendingToolCall {
+  toolCallId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  // 预览摘要（如"新增 5 个节点"），由 buildToolCallSummary 生成
+  summary: string;
+}
+
+/**
+ * 根据 tool call 的名称和参数生成预览摘要（不实际应用，仅用于预览面板展示）。
+ * 让用户在确认前即可看到每条变更的简述。
+ */
+function buildToolCallSummary(
+  toolName: string,
+  args: Record<string, unknown>
+): string {
+  const len = (v: unknown): number => (Array.isArray(v) ? v.length : 0);
+  switch (toolName) {
+    case "apply_mechanism":
+      return `新增 ${len(args.nodes)} 个节点、${len(args.edges)} 条连接`;
+    case "apply_numeric":
+      return `新增 ${len(args.attributes)} 个属性、${len(args.formulas)} 条公式`;
+    case "apply_gdd":
+      return `追加 ${len(args.sections)} 个文档段落`;
+    case "update_node":
+      return `修改节点「${(args.nodeLabel as string) ?? ""}」`;
+    case "remove_node":
+      return `删除节点「${(args.nodeLabel as string) ?? ""}」`;
+    case "add_node_to_existing":
+      return `增量添加 ${len(args.nodes)} 个节点、${len(args.edges)} 条连接`;
+    case "patch_formula": {
+      const attr = (args.attributeName as string) ?? "";
+      const expr = (args.expression as string) ?? "";
+      return expr ? `修改公式 ${attr} = ${expr}` : `修改公式「${attr}」`;
+    }
+    case "apply_loops":
+      return `生成 ${len(args.loops)} 个核心循环`;
+    case "apply_moments":
+      return `生成 ${len(args.moments)} 个高光时刻`;
+    case "apply_rules":
+      return `生成 ${len(args.rules)} 条规则`;
+    case "apply_level_flow":
+      return `生成关卡流程「${(args.name as string) ?? ""}」：${len(args.nodes)} 个关卡、${len(args.edges)} 条连线`;
+    default:
+      return `调用工具 ${toolName}`;
+  }
+}
+
 export default function AIPanel() {
-  const { getActiveConfig, isGenerating, setIsGenerating, lastError, setLastError, setAbortController, abortCurrent } =
+  const { getActiveConfig, isGenerating, setIsGenerating, lastError, setLastError, setAbortController, abortByKey } =
     useAIStore();
   const { currentProject } = useProjectStore();
   const { nodes, edges } = useMechanismStore();
@@ -211,6 +263,8 @@ export default function AIPanel() {
   const [activeAction, setActiveAction] = useState<AIAction | null>(null);
   const [actionInput, setActionInput] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
+  // 追踪最后应用的模块（用于应用后跳转）；收集阶段不写入，仅在用户确认应用时更新
+  const lastAppliedModuleRef = useRef<"mechanism" | "numeric" | "document" | null>(null);
 
   // ===== AI 对话持久化 =====
   const {
@@ -295,7 +349,7 @@ export default function AIPanel() {
 
   // 停止生成
   const handleStop = () => {
-    abortCurrent();
+    abortByKey("panel");
     setIsGenerating(false);
   };
 
@@ -329,7 +383,7 @@ export default function AIPanel() {
     }
 
     const controller = new AbortController();
-    setAbortController(controller);
+    setAbortController("panel", controller);
     setIsGenerating(true);
     setLastError(null);
 
@@ -447,77 +501,14 @@ export default function AIPanel() {
         action: action.id,
       });
       const aiItemId = aiMsg.id;
-      // 追踪最后应用的模块（用于跳转）
-      let lastAppliedModule: "mechanism" | "numeric" | "document" | null = null;
+      // 收集阶段重置模块追踪；实际跳转推迟到用户在预览面板确认应用后
+      lastAppliedModuleRef.current = null;
 
       setChat((c) => [
         ...c,
         { id: userMsg.id, role: "user" as const, content: userContent, action: action.id },
         { id: aiItemId, role: "assistant" as const, content: "", action: action.id },
       ]);
-
-      // 自动应用 tool call：统一处理 DesignAction 和 DimensionAction
-      const autoApplyToolCall = async (
-        toolName: string,
-        args: Record<string, unknown>
-      ): Promise<string> => {
-        console.log("[AI] 应用工具调用", { toolName, argsKeys: Object.keys(args) });
-        const parsed = anyActionFromToolCall(toolName, args);
-        if (!parsed) {
-          console.warn("[AI] 工具未识别", { toolName });
-          return `工具 ${toolName} 未识别，跳过`;
-        }
-        console.log("[AI] 工具已识别", {
-          type: parsed.type,
-          actionType: (parsed.action as { action?: string }).action,
-        });
-        const toolCallId = `tc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        try {
-          if (parsed.type === "design") {
-            const { summary, undo } = await applyDesignAction(parsed.action);
-            lastAppliedModule = getActionModule(parsed.action);
-            const record: AppliedRecord = { toolCallId, summary, undo };
-            setChat((c) =>
-              c.map((item) =>
-                item.id === aiItemId
-                  ? {
-                      ...item,
-                      appliedRecords: [...(item.appliedRecords ?? []), record],
-                      applied: true,
-                    }
-                  : item
-              )
-            );
-            return summary;
-          } else {
-            // 维度动作（循环/时刻/规则/关卡）
-            if (!currentProject) {
-              return "无当前项目，无法应用维度动作";
-            }
-            const { summary, undo } = await applyDimensionAction(
-              parsed.action,
-              currentProject.id
-            );
-            const record: AppliedRecord = { toolCallId, summary, dimUndo: undo };
-            setChat((c) =>
-              c.map((item) =>
-                item.id === aiItemId
-                  ? {
-                      ...item,
-                      appliedRecords: [...(item.appliedRecords ?? []), record],
-                      applied: true,
-                    }
-                  : item
-              )
-            );
-            return summary;
-          }
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          addToast({ title: "应用失败", description: msg, variant: "error" });
-          return `应用失败: ${msg}`;
-        }
-      };
 
       const result = await callAIStream(
         {
@@ -530,8 +521,31 @@ export default function AIPanel() {
         {
           onChunk: (chunk) => appendAIChunk(aiItemId, chunk),
           onReasoning: (chunk) => appendReasoning(aiItemId, chunk),
-          // agentic 循环：每个 tool call 完成后自动应用，结果回传给 AI 继续下一轮
-          onToolApply: async (tc) => autoApplyToolCall(tc.name, tc.arguments),
+          // agentic 循环：把 tool call 收集到 pendingToolCalls 供用户预览确认，
+          // 不立即应用；返回摘要给 AI 让其继续推理（实际写入推迟到用户点击"应用"）
+          onToolApply: async (tc) => {
+            const summary = buildToolCallSummary(tc.name, tc.arguments);
+            const pendingId = `pc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            setChat((c) =>
+              c.map((item) =>
+                item.id === aiItemId
+                  ? {
+                      ...item,
+                      pendingToolCalls: [
+                        ...(item.pendingToolCalls ?? []),
+                        {
+                          toolCallId: pendingId,
+                          toolName: tc.name,
+                          arguments: tc.arguments,
+                          summary,
+                        },
+                      ],
+                    }
+                  : item
+              )
+            );
+            return summary;
+          },
           onFinish: (reason) => {
             if (reason === "length") {
               appendAIChunk(
@@ -548,17 +562,21 @@ export default function AIPanel() {
         }
       );
 
-      // 持久化最终 AI 回复（appliedRecords 不持久化，撤销仅限当前会话）
+      // 持久化最终 AI 回复（pendingToolCalls / appliedRecords 不持久化，仅限当前会话）
       await updatePersistedMessage(aiItemId, {
         content: result.content,
       });
 
-      // 跳转到最后应用的模块
-      if (lastAppliedModule && currentProject) {
-        navigate(`/project/${currentProject.id}/${lastAppliedModule}`);
+      // 有待确认变更时提示用户在预览面板决策；无变更则按完成处理
+      if (result.toolCalls.length > 0) {
+        addToast({
+          title: `${action.label}完成`,
+          description: "请在预览面板确认待应用变更",
+          variant: "default",
+        });
+      } else {
+        addToast({ title: `${action.label}完成`, variant: "success" });
       }
-
-      addToast({ title: `${action.label}完成`, variant: "success" });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "未知错误";
       if (e instanceof DOMException && e.name === "AbortError") {
@@ -568,7 +586,7 @@ export default function AIPanel() {
         addToast({ title: `${action.label}失败`, description: msg, variant: "error" });
       }
     } finally {
-      setAbortController(null);
+      setAbortController("panel", null);
       setIsGenerating(false);
       setActiveAction(null);
       setActionInput("");
@@ -606,6 +624,156 @@ export default function AIPanel() {
     }
   };
 
+  // 应用单个 tool call 并记录到 appliedRecords（供"应用"按钮调用）。
+  // 返回是否应用成功：成功时已写入 store 并追加到 appliedRecords，失败时仅弹 toast。
+  const applyAndRecord = async (
+    aiItemId: string,
+    toolName: string,
+    args: Record<string, unknown>
+  ): Promise<boolean> => {
+    const parsed = anyActionFromToolCall(toolName, args);
+    if (!parsed) {
+      console.warn("[AI] 工具未识别", { toolName });
+      addToast({
+        title: "应用失败",
+        description: `工具 ${toolName} 未识别`,
+        variant: "error",
+      });
+      return false;
+    }
+    const toolCallId = `tc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      if (parsed.type === "design") {
+        const { summary, undo } = await applyDesignAction(parsed.action);
+        lastAppliedModuleRef.current = getActionModule(parsed.action);
+        const record: AppliedRecord = { toolCallId, summary, undo };
+        setChat((c) =>
+          c.map((item) =>
+            item.id === aiItemId
+              ? {
+                  ...item,
+                  appliedRecords: [...(item.appliedRecords ?? []), record],
+                  applied: true,
+                }
+              : item
+          )
+        );
+      } else {
+        // 维度动作（循环/时刻/规则/关卡）
+        if (!currentProject) {
+          addToast({
+            title: "应用失败",
+            description: "无当前项目，无法应用维度动作",
+            variant: "error",
+          });
+          return false;
+        }
+        const { summary, undo } = await applyDimensionAction(
+          parsed.action,
+          currentProject.id
+        );
+        const record: AppliedRecord = { toolCallId, summary, dimUndo: undo };
+        setChat((c) =>
+          c.map((item) =>
+            item.id === aiItemId
+              ? {
+                  ...item,
+                  appliedRecords: [...(item.appliedRecords ?? []), record],
+                  applied: true,
+                }
+              : item
+          )
+        );
+      }
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addToast({ title: "应用失败", description: msg, variant: "error" });
+      return false;
+    }
+  };
+
+  // 全部应用：按收集顺序依次应用，成功后清空 pending 并跳转到最后应用的模块
+  const handleApplyAll = async (aiItemId: string) => {
+    const item = chat.find((c) => c.id === aiItemId);
+    const pending = item?.pendingToolCalls ?? [];
+    if (pending.length === 0) return;
+    let successCount = 0;
+    for (const pc of pending) {
+      const ok = await applyAndRecord(aiItemId, pc.toolName, pc.arguments);
+      if (ok) successCount++;
+    }
+    setChat((c) =>
+      c.map((it) =>
+        it.id === aiItemId ? { ...it, pendingToolCalls: [] } : it
+      )
+    );
+    if (successCount > 0) {
+      addToast({
+        title: "已应用全部变更",
+        description: `成功应用 ${successCount} 项`,
+        variant: "success",
+      });
+      if (lastAppliedModuleRef.current && currentProject) {
+        navigate(`/project/${currentProject.id}/${lastAppliedModuleRef.current}`);
+      }
+    }
+  };
+
+  // 全部丢弃：清空 pendingToolCalls，不应用任何变更
+  const handleDiscardAll = (aiItemId: string) => {
+    const item = chat.find((c) => c.id === aiItemId);
+    if (!item?.pendingToolCalls?.length) return;
+    setChat((c) =>
+      c.map((it) =>
+        it.id === aiItemId ? { ...it, pendingToolCalls: [] } : it
+      )
+    );
+    addToast({ title: "已丢弃全部变更", variant: "default" });
+  };
+
+  // 单条应用：应用后从 pending 移除（仅成功时移除），仍走 appliedRecords 撤销机制
+  const handleApplyOne = async (aiItemId: string, toolCallId: string) => {
+    const item = chat.find((c) => c.id === aiItemId);
+    const pc = item?.pendingToolCalls?.find((p) => p.toolCallId === toolCallId);
+    if (!pc) return;
+    const ok = await applyAndRecord(aiItemId, pc.toolName, pc.arguments);
+    if (ok) {
+      setChat((c) =>
+        c.map((it) =>
+          it.id === aiItemId
+            ? {
+                ...it,
+                pendingToolCalls: it.pendingToolCalls?.filter(
+                  (p) => p.toolCallId !== toolCallId
+                ),
+              }
+            : it
+        )
+      );
+      if (lastAppliedModuleRef.current && currentProject) {
+        navigate(`/project/${currentProject.id}/${lastAppliedModuleRef.current}`);
+      }
+    }
+  };
+
+  // 单条丢弃：仅从 pending 移除
+  const handleDiscardOne = (aiItemId: string, toolCallId: string) => {
+    setChat((c) =>
+      c.map((it) =>
+        it.id === aiItemId
+          ? {
+              ...it,
+              pendingToolCalls: it.pendingToolCalls?.filter(
+                (p) => p.toolCallId !== toolCallId
+              ),
+            }
+          : it
+      )
+    );
+    addToast({ title: "已丢弃", variant: "default" });
+  };
+
   const handleChat = async () => {
     if (!input.trim() || !currentProject || !config) return;
 
@@ -623,7 +791,7 @@ export default function AIPanel() {
     setInput("");
 
     const controller = new AbortController();
-    setAbortController(controller);
+    setAbortController("panel", controller);
     setIsGenerating(true);
     setLastError(null);
 
@@ -688,8 +856,9 @@ export default function AIPanel() {
         rules: chatRules,
         levelFlows: chatFlows,
       });
+      const trimmedMessages = trimMessages(messages);
       const result = await callAIStream(
-        { config, messages, signal: controller.signal },
+        { config, messages: trimmedMessages, signal: controller.signal },
         {
           onChunk: (chunk) => appendAIChunk(aiItemId, chunk),
           onReasoning: (chunk) => appendReasoning(aiItemId, chunk),
@@ -719,7 +888,7 @@ export default function AIPanel() {
         addToast({ title: "AI 回复失败", description: msg, variant: "error" });
       }
     } finally {
-      setAbortController(null);
+      setAbortController("panel", null);
       setIsGenerating(false);
     }
   };
@@ -902,6 +1071,10 @@ export default function AIPanel() {
                 item={item}
                 streaming={isLastAssistant && isGenerating}
                 onUndo={(toolCallId) => handleUndo(item.id, toolCallId)}
+                onApplyAll={() => void handleApplyAll(item.id)}
+                onDiscardAll={() => handleDiscardAll(item.id)}
+                onApplyOne={(toolCallId) => void handleApplyOne(item.id, toolCallId)}
+                onDiscardOne={(toolCallId) => handleDiscardOne(item.id, toolCallId)}
               />
             );
           })
@@ -984,15 +1157,24 @@ function ChatBubble({
   item,
   streaming,
   onUndo,
+  onApplyAll,
+  onDiscardAll,
+  onApplyOne,
+  onDiscardOne,
 }: {
   item: ChatItem;
   streaming?: boolean;
   onUndo?: (toolCallId: string) => void;
+  onApplyAll?: () => void;
+  onDiscardAll?: () => void;
+  onApplyOne?: (toolCallId: string) => void;
+  onDiscardOne?: (toolCallId: string) => void;
 }) {
   const isUser = item.role === "user";
   const hasContent = item.content.trim().length > 0;
   const hasReasoning = (item.reasoning ?? "").trim().length > 0;
   const hasAppliedRecords = (item.appliedRecords?.length ?? 0) > 0;
+  const hasPendingToolCalls = (item.pendingToolCalls?.length ?? 0) > 0;
   return (
     <div
       className={cn(
@@ -1010,7 +1192,7 @@ function ChatBubble({
       >
         {isUser ? (
           item.content
-        ) : !hasContent && streaming && !hasAppliedRecords && !hasReasoning ? (
+        ) : !hasContent && streaming && !hasAppliedRecords && !hasReasoning && !hasPendingToolCalls ? (
           <span className="inline-flex items-center gap-1 text-ink-muted">
             <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
             <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse [animation-delay:0.2s]" />
@@ -1036,6 +1218,75 @@ function ChatBubble({
           </div>
         )}
       </div>
+
+      {/* 预览待应用变更面板：收集到的 tool call 不立即写入，等用户确认 */}
+      {!isUser && hasPendingToolCalls && (
+        <div className="flex flex-col gap-1.5 max-w-[95%] p-2 rounded-lg border border-warn/40 bg-warn-muted/20">
+          <div className="flex items-center gap-1.5 text-2xs font-medium text-ink-primary">
+            <ClipboardCheck className="w-3 h-3 text-warn flex-shrink-0" />
+            <span>预览待应用变更（{item.pendingToolCalls!.length}）</span>
+          </div>
+          <div className="flex flex-col gap-1">
+            {item.pendingToolCalls!.map((pc) => (
+              <div
+                key={pc.toolCallId}
+                className="flex items-center justify-between gap-2 px-2 py-1 rounded-md text-2xs bg-canvas-sunken border border-line"
+              >
+                <span className="flex items-center gap-1.5 text-ink-secondary min-w-0">
+                  <Wand2 className="w-3 h-3 text-accent flex-shrink-0" />
+                  <span className="truncate">{pc.summary}</span>
+                </span>
+                <div className="flex items-center gap-0.5 flex-shrink-0">
+                  {onApplyOne && (
+                    <button
+                      onClick={() => onApplyOne(pc.toolCallId)}
+                      disabled={streaming}
+                      className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-2xs text-accent hover:bg-accent/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="应用此项"
+                    >
+                      <Check className="w-3 h-3" />
+                      应用
+                    </button>
+                  )}
+                  {onDiscardOne && (
+                    <button
+                      onClick={() => onDiscardOne(pc.toolCallId)}
+                      disabled={streaming}
+                      className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-2xs text-ink-muted hover:bg-canvas-elevated hover:text-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="丢弃此项"
+                    >
+                      <X className="w-3 h-3" />
+                      丢弃
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-1.5 pt-0.5">
+            {onApplyAll && (
+              <button
+                onClick={onApplyAll}
+                disabled={streaming}
+                className="flex-1 flex items-center justify-center gap-1 text-2xs px-2 py-1 rounded bg-accent text-canvas-sunken font-medium hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <Check className="w-3 h-3" />
+                全部应用
+              </button>
+            )}
+            {onDiscardAll && (
+              <button
+                onClick={onDiscardAll}
+                disabled={streaming}
+                className="flex-1 flex items-center justify-center gap-1 text-2xs px-2 py-1 rounded border border-line text-ink-secondary hover:bg-canvas-elevated hover:text-danger disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <X className="w-3 h-3" />
+                全部丢弃
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 已自动应用的 tool call 记录（每个可单独撤销） */}
       {!isUser && !streaming && hasAppliedRecords && (

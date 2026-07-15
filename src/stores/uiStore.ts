@@ -51,6 +51,10 @@ export interface Toast {
   title: string;
   description?: string;
   variant: "default" | "success" | "error" | "warning";
+  /** 去重键（内部使用，相同 title+variant 3秒内去重） */
+  _dedupKey?: string;
+  /** 创建时间戳（内部使用，配合 _dedupKey 做去重） */
+  _ts?: number;
 }
 
 export const useUIStore = create<UIState>((set, get) => ({
@@ -79,8 +83,17 @@ export const useUIStore = create<UIState>((set, get) => ({
   setAIPanelOpen: (open) => set({ aiPanelOpen: open }),
 
   addToast: (toast) => {
-    const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    set((s) => ({ toasts: [...s.toasts, { ...toast, id }] }));
+    // 3 秒内相同 title+variant 去重
+    const now = Date.now();
+    const dedupKey = `${toast.title}__${toast.variant ?? "default"}`;
+    const existing = get().toasts.find(
+      (t) => t._dedupKey === dedupKey && now - (t._ts ?? 0) < 3000
+    );
+    if (existing) return; // 重复，不弹
+    const id = `toast_${now}_${Math.random().toString(36).slice(2, 8)}`;
+    set((s) => ({
+      toasts: [...s.toasts, { ...toast, id, _dedupKey: dedupKey, _ts: now }],
+    }));
     // 3 秒后自动移除
     setTimeout(() => {
       get().removeToast(id);

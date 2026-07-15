@@ -144,7 +144,7 @@ src/
 ├── lib/                     # 纯函数库（无 React 依赖）
 │   ├── aiClient.ts          #   AI 调用客户端（流式 + 非流式）
 │   ├── aiPrompts.ts         #   所有 prompt 模板
-│   ├── aiActions.ts         #   AI function calling 动作定义
+│   ├── aiActions.ts         #   AI Tool Calls 工具定义
 │   ├── graphLayout.ts       #   ELK 布局封装
 │   ├── graphAnalysis.ts     #   图分析（环路、连通性）
 │   ├── formula.ts           #   公式解析（mathjs）
@@ -311,29 +311,58 @@ type CustomFieldType =
 
 ### 3.4 AI 集成参考
 
-#### 架构
+#### 架构（统一调用层）
 ```
-aiPrompts.ts (prompt 模板)
+aiPrompts.ts (prompt 模板：build* 函数 + 共享 SYSTEM_PROMPT)
     ↓
-aiClient.ts (HTTP 调用：流式/非流式，OpenAI 兼容)
+aiClient.ts (统一 HTTP 调用层：流式/非流式，OpenAI 兼容 + Claude 适配)
     ↓
-aiActions.ts (function calling 动作定义)
+aiActions.ts (Tool Calls 工具定义 + 应用落库 + UndoRecord)
     ↓
-aiService.ts (服务层封装)
+aiService.ts (画布元素生成服务层，委托 aiClient)
     ↓
 features/ai/ (UI 面板：AIPanel + AIMentorPanel)
 ```
 
+当前思路：所有 AI 调用统一经 `aiClient`（流式 `callAIStream` / 非流式 `callAI`），`aiService` 的画布元素生成也委托 `aiClient`，避免双轨实现导致能力割裂。
+
 #### 多 Provider 支持
-- OpenAI 兼容（DeepSeek、OpenAI、本地 Ollama 等）
-- Claude（独立调用路径）
+- OpenAI 兼容（DeepSeek、OpenAI、Qwen、本地 Ollama 等）
+- Claude（独立端点与 tools 格式转换）
 - 配置存 `aiStore`，支持多配置切换
 
-#### Function Calling 参考
-- 使用 OpenAI 兼容的 `tools` 参数
+#### Tool Calls 参考
+- 使用 OpenAI 兼容的 `tools` 参数（DeepSeek 官方称 "Tool Calls"），工具定义在 `DESIGN_TOOLS_OPENAI`（11 个工具）
+- 参考：https://api-docs.deepseek.com/zh-cn/guides/tool_calls
+- 每个 action 通过白名单过滤仅暴露相关工具，降低模型选择难度
+- 生成类 action 用 `tool_choice` 强制调用指定工具（DeepSeek 除外，官方不传 tool_choice）
 - 智能体循环最多 8 轮（`MAX_AGENT_ROUNDS`）
-- 空回复/400 错误降级重试（关闭思考模式）
-- DeepSeek 思考模式需回传 `reasoning_content`
+- 工具参数 JSON 解析失败时回传错误让 AI 重试（而非静默失败）
+- 思考模式下的 Tool Calls（DeepSeek-V3.2+）需回传 `reasoning_content`
+
+#### Prompt 工程参考
+- **SYSTEM_PROMPT 全局否定**：玩法属性 vs 技术参数的约束在系统提示层面声明，所有 build 函数继承
+- **工具 schema 内联**：生成类 prompt 在文本中内联工具参数 JSON schema（字段名/类型/枚举），降低模型推断误差
+- **few-shot 示例**：关键生成函数补充完整示例（机制网络、数值公式、核心循环等）
+- **跨维度上下文注入**：生成类 prompt 注入关联维度摘要（如生成核心循环时注入机制节点列表），支撑跨维度一致性
+- **用户额外要求**：`ai-fields-hint` 机制注入 prompt，优先级低于玩法属性原则
+
+#### 异常处理与降级参考
+- HTTP 状态码语义分类：401/403（鉴权）、402（余额）、429（限流）、500/502/503（服务端）、400（客户端）
+- 429 限流退避：解析 `Retry-After`，指数退避重试（最多 2 次）
+- model 级降级：同 provider 内 model 降级（如 gpt-4o → gpt-4o-mini），不跨 provider
+- 思考模式降级：DeepSeek 400/空回复时关闭 thinking 重试（最多 1 次）
+- 离线模板兜底：AI 调用失败且无降级可用时，返回模板数据 + 友好提示
+- 友好错误映射：`explainAIError()` 将技术错误转为用户可读提示
+
+#### 流式与并发参考
+- 流式覆盖：AIPanel 动作/对话、AIMentorPanel 解释、画布节点生成、属性生成均走流式
+- 流式解析：OpenAI SSE（`parseSSEStream`）+ Claude 事件流（`content_block_delta`）
+- 并发去重：`generatingKeys` 前置检查，阻止同元素重复请求
+- AbortController 多例：按调用来源 key 管理（panel / mentor / node），避免单例覆盖
+- 全局并发上限：所有 AI 调用经并发限流（上限 3），避免突发请求
+- 滑窗裁剪：长对话/agentic 多轮按 token 估算裁剪中间历史，保留 system + 最近 N 轮
+- token 预算：`gpt-tokenizer` 估算 prompt 长度，超限裁剪
 
 #### Prompt 安全建议
 - 用户输入可用 `wrapUserInput()` 包裹隔离，防 prompt 注入
@@ -400,6 +429,7 @@ features/ai/ (UI 面板：AIPanel + AIMentorPanel)
 | AI 边标签与节点 label 不匹配时抛错 | 阻断流程 | 大小写/空格不敏感匹配，失败则保留所有节点 + console.warn |
 | 自造节点图布局算法 | 维护成本高 | 用 elkjs |
 | 把矩阵/文档纳入画布元素 | 不是玩法节点 | CanvasElement 仅 7 种玩法元素 |
+| 双轨 AI 实现导致能力割裂 | aiService 无超时/取消/降级 | aiService 委托 aiClient，统一调用层 |
 
 ### 4.3 性能参考
 
@@ -407,6 +437,8 @@ features/ai/ (UI 面板：AIPanel + AIMentorPanel)
 - AI 单次工具调用建议不超过 15 个节点（复杂设计分多次）
 - 重型库（elkjs、html-to-image、mathjs）动态 import
 - 图标按需导入
+- 长对话/agentic 多轮按 token 估算滑窗裁剪中间历史，保留 system + 最近 N 轮
+- AI 全局并发上限 3，避免突发请求压垮限流
 
 ### 4.4 代码风格参考
 
@@ -424,6 +456,8 @@ features/ai/ (UI 面板：AIPanel + AIMentorPanel)
 - AI 请求体上限 200KB（`MAX_BODY_SIZE`）
 - 流式请求超时 5 分钟，非流式 2 分钟
 - localStorage 写入失败静默忽略（隐私模式兼容）
+- HTTP 状态码语义分类处理：401/403 鉴权、402 余额、429 限流退避、500/502/503 服务端重试
+- `explainAIError()` 将技术错误转为用户可读提示，避免原始错误文案暴露
 
 ### 4.6 Git 提交参考
 
@@ -460,7 +494,7 @@ npm run lint     # ESLint 检查
 ### 5.3 新增 AI 功能流程
 
 1. 在 `src/lib/aiPrompts.ts` 编写 prompt 模板函数
-2. 如需 function calling，在 `src/lib/aiActions.ts` 定义 action 接口
+2. 如需 Tool Calls，在 `src/lib/aiActions.ts` 定义 action 接口
 3. 在 UI 层调用 `callAI()`（非流式）或 `callAIStream()`（流式）
 4. AI 回复如含 HTML，`sanitizeHtml()` 后渲染
 5. 用户输入 `wrapUserInput()` 包裹
@@ -515,5 +549,5 @@ npm run lint     # ESLint 检查
 
 ---
 
-**最后更新**：2026-07-14
+**最后更新**：2026-07-15
 **文档版本**：0.0.0（跟随 package.json）

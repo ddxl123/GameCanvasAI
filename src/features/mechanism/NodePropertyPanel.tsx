@@ -6,7 +6,7 @@ import { useAIStore } from "@/stores/aiStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { db } from "@/db";
 import { cn } from "@/lib/utils";
-import { callAI } from "@/lib/aiClient";
+import { callAIStream } from "@/lib/aiClient";
 import {
   buildNodeFieldsGenPrompt,
   type NodeFieldsGenMode,
@@ -345,7 +345,7 @@ export default function NodePropertyPanel() {
         undefined,
         aiHint
       );
-      const result = await callAI({ config, messages });
+      const result = await callAIStream({ config, messages }, {});
       const suggestions = parseAIFields(result.content);
       if (!suggestions.length) {
         addToast({
@@ -398,7 +398,7 @@ export default function NodePropertyPanel() {
         field.key,
         aiHint
       );
-      const result = await callAI({ config, messages });
+      const result = await callAIStream({ config, messages }, {});
       const suggestions = parseAIFields(result.content);
       const matched = suggestions.find((s) => s.key === field.key) || suggestions[0];
       if (!matched) {

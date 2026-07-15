@@ -39,6 +39,10 @@ import {
   Lightbulb,
   PlayCircle,
   GraduationCap,
+  Settings as SettingsIcon,
+  ChevronDown,
+  Check,
+  Folder,
 } from "lucide-react";
 import AIPanel from "@/features/ai/AIPanel";
 import AIMentorPanel from "@/features/ai/AIMentorPanel";
@@ -52,7 +56,6 @@ import PerformanceBudgetPanel from "@/features/mechanism/PerformanceBudgetPanel"
 import PresentationMode from "@/features/presentation/PresentationMode";
 import InspirationBoard from "@/features/inspiration/InspirationBoard";
 import PlayPreview from "@/features/playtest/PlayPreview";
-import OnboardingChecklist from "@/features/onboarding/OnboardingChecklist";
 import SoundToggle from "@/features/settings/SoundToggle";
 import CreateToolbar from "@/features/canvas/CreateToolbar";
 import UnifiedPropertyPanel from "@/features/canvas/UnifiedPropertyPanel";
@@ -60,7 +63,7 @@ import UnifiedPropertyPanel from "@/features/canvas/UnifiedPropertyPanel";
 export default function ProjectLayout() {
   const { projectId } = useParams();
   const navigate = useNavigate();
-  const { currentProject, setCurrentProject, getProject } = useProjectStore();
+  const { currentProject, setCurrentProject, getProject, projects, loadProjects } = useProjectStore();
   const {
     leftPanelCollapsed,
     rightPanelCollapsed,
@@ -106,6 +109,7 @@ export default function ProjectLayout() {
   const [playPreviewOpen, setPlayPreviewOpen] = useState(false);
   const [mentorOpen, setMentorOpen] = useState(false);
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
 
   // 响应式：窗口宽度 ≤768px 视为移动端
   const [isMobile, setIsMobile] = useState(
@@ -181,6 +185,11 @@ export default function ProjectLayout() {
     };
   }, [projectId, getProject, setCurrentProject, navigate, clearHistory]);
 
+  // 加载项目列表（用于项目切换器）
+  useEffect(() => {
+    loadProjects();
+  }, [loadProjects]);
+
   if (!currentProject) {
     return (
       <div className="min-h-screen bg-canvas flex items-center justify-center">
@@ -216,9 +225,76 @@ export default function ProjectLayout() {
           </div>
           <span className="text-ink-muted text-xs">项目</span>
           <span className="text-ink-muted">/</span>
-          <span className="font-medium text-ink-primary">
-            {currentProject.name}
-          </span>
+          {/* 项目切换器 */}
+          <div className="relative">
+            <button
+              onClick={() => setSwitcherOpen((v) => !v)}
+              className="flex items-center gap-1 font-medium text-ink-primary hover:text-accent transition-colors px-1.5 py-0.5 rounded hover:bg-canvas-sunken/50"
+              title="切换项目"
+            >
+              <span className="truncate max-w-[160px]">
+                {currentProject.name}
+              </span>
+              <ChevronDown
+                className={cn(
+                  "w-3 h-3 transition-transform",
+                  switcherOpen && "rotate-180"
+                )}
+              />
+            </button>
+            {switcherOpen && (
+              <>
+                {/* 点击外部关闭 */}
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setSwitcherOpen(false)}
+                />
+                <div className="absolute top-full left-0 mt-1 z-50 w-56 max-h-72 overflow-y-auto rounded-md bg-canvas-elevated border border-line shadow-pop animate-scale-in">
+                  <div className="py-1">
+                    {projects.length === 0 && (
+                      <div className="px-3 py-2 text-2xs text-ink-muted">
+                        加载中...
+                      </div>
+                    )}
+                    {projects.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => {
+                          setSwitcherOpen(false);
+                          if (p.id !== projectId) {
+                            navigate(`/project/${p.id}/workspace`);
+                          }
+                        }}
+                        className={cn(
+                          "w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-canvas-sunken transition-colors",
+                          p.id === projectId && "text-accent"
+                        )}
+                      >
+                        {p.id === projectId ? (
+                          <Check className="w-3 h-3 flex-shrink-0" />
+                        ) : (
+                          <Folder className="w-3 h-3 flex-shrink-0 text-ink-muted" />
+                        )}
+                        <span className="flex-1 truncate">{p.name}</span>
+                      </button>
+                    ))}
+                    {/* 分隔线 + 返回全部项目 */}
+                    <div className="border-t border-line-subtle my-1" />
+                    <button
+                      onClick={() => {
+                        setSwitcherOpen(false);
+                        navigate("/");
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-ink-secondary hover:bg-canvas-sunken transition-colors"
+                    >
+                      <ChevronLeft className="w-3 h-3 flex-shrink-0" />
+                      返回全部项目
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="flex-1" />
@@ -264,9 +340,9 @@ export default function ProjectLayout() {
 
         <div className="flex-1" />
 
-        {/* 右侧工具栏 */}
+        {/* 右侧工具栏 —— 按功能分组，hover 分组间隙显示组名 */}
         <div className="flex items-center gap-0.5">
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-0.5" title="撤销 / 重做">
             <button
               onClick={() => void undo()}
               disabled={!canUndo}
@@ -294,7 +370,7 @@ export default function ProjectLayout() {
           </div>
           <span className="w-px h-4 bg-line-subtle mx-1" />
 
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-0.5" title="搜索 / 快照">
             <button
               onClick={() => setSearchOpen(true)}
               className="btn-ghost h-8 px-2"
@@ -322,7 +398,7 @@ export default function ProjectLayout() {
           </div>
           <span className="w-px h-4 bg-line-subtle mx-1" />
 
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-0.5" title="导出 / 性能">
             <button
               onClick={() => setExportOpen(true)}
               className="btn-ghost h-8 px-2"
@@ -342,7 +418,7 @@ export default function ProjectLayout() {
           </div>
           <span className="w-px h-4 bg-line-subtle mx-1" />
 
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-0.5" title="演示 / 试玩">
             <button
               onClick={() => setPresentationOpen(true)}
               className="btn-ghost h-8 px-2"
@@ -362,7 +438,7 @@ export default function ProjectLayout() {
           </div>
           <span className="w-px h-4 bg-line-subtle mx-1" />
 
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-0.5" title="灵感 / 导师">
             <button
               onClick={() => setInspirationOpen(true)}
               className="btn-ghost h-8 px-2"
@@ -382,7 +458,7 @@ export default function ProjectLayout() {
           </div>
           <span className="w-px h-4 bg-line-subtle mx-1" />
 
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-0.5" title="外观 / AI / 设置">
             <button
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
               className="btn-ghost h-8 w-8 p-0 flex items-center justify-center"
@@ -409,6 +485,14 @@ export default function ProjectLayout() {
               {aiPanelOpen && (
                 <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
               )}
+            </button>
+            <button
+              onClick={() => navigate("/settings")}
+              className="btn-ghost h-8 w-8 p-0 flex items-center justify-center"
+              title="全局设置（AI 配置 / 数据管理）"
+              aria-label="全局设置"
+            >
+              <SettingsIcon className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={toggleRightPanel}
@@ -554,8 +638,6 @@ export default function ProjectLayout() {
       />
       <AIMentorPanel open={mentorOpen} onOpenChange={setMentorOpen} />
       <ShortcutCheatsheet open={cheatsheetOpen} onOpenChange={setCheatsheetOpen} />
-
-      {projectId && <OnboardingChecklist projectId={projectId} />}
     </div>
   );
 }

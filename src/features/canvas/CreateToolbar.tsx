@@ -17,7 +17,7 @@ import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/stores/uiStore";
 import type { CanvasElementType, NodeType } from "@/types";
-import { NODE_LIBRARY, getNodeIcon } from "@/features/mechanism/nodeTypes";
+import { NODE_LIBRARY_BY_GAMEPLAY, getNodeIcon } from "@/features/mechanism/nodeTypes";
 import { DRAG_DATA_KEY } from "./ReactFlowCanvas";
 
 interface CreateToolItem {
@@ -37,16 +37,14 @@ interface CreateToolGroup {
   items: CreateToolItem[];
 }
 
-/** 维度 → 主题色映射（与 ElementNode DIMENSION_COLOR_MAP 对齐） */
+/** 维度 → 主题色映射（玩法设计师视角分组，与 ElementNode DIMENSION_COLOR_MAP 风格对齐） */
 const DIMENSION_ACCENT: Record<string, string> = {
-  "逻辑层": "#6366F1",
-  "资源层": "#10B981",
-  "成长层": "#F59E0B",
-  "反馈层": "#06B6D4",
-  "社交 / AI": "#D946EF",
-  "世界观": "#059669",
-  "内容元素": "#EC4899",
-  "感官体验": "#A855F7",
+  "战斗系统": "#EF4444",
+  "成长系统": "#10B981",
+  "经济系统": "#F59E0B",
+  "任务与叙事": "#6366F1",
+  "关卡与探索": "#06B6D4",
+  "表现层": "#A855F7",
   "辅助": "#FDE047",
 };
 
@@ -78,9 +76,9 @@ const CORE_GROUPS: CreateToolGroup[] = [
   },
 ];
 
-/** 机制节点按维度展开：从 NODE_LIBRARY 构建分组 */
+/** 机制节点按维度展开：从 NODE_LIBRARY_BY_GAMEPLAY 构建分组 */
 function buildDimensionGroups(): CreateToolGroup[] {
-  return NODE_LIBRARY.map((libGroup) => ({
+  return NODE_LIBRARY_BY_GAMEPLAY.map((libGroup) => ({
     label: libGroup.category,
     accent: DIMENSION_ACCENT[libGroup.category] || "#A3E635",
     items: libGroup.types.map((meta) => {
@@ -101,7 +99,7 @@ export default function CreateToolbar() {
   const requestCanvasCreate = useUIStore((s) => s.requestCanvasCreate);
   // 折叠状态：默认核心分组展开，维度分组全部折叠
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
-    () => new Set(NODE_LIBRARY.map((g) => g.category))
+    () => new Set(NODE_LIBRARY_BY_GAMEPLAY.map((g) => g.category))
   );
   // 搜索关键字：非空时强制展开所有匹配的分组
   const [query, setQuery] = useState("");
@@ -286,7 +284,7 @@ export default function CreateToolbar() {
         <div className="flex items-center gap-1.5 px-1">
           <Layers className="w-3 h-3 text-accent/70" />
           <span className="text-3xs font-semibold text-ink-secondary uppercase tracking-wider">
-            机制节点（按维度）
+            机制节点（按玩法）
           </span>
         </div>
         {dimensionGroups.map(renderGroup)}

@@ -1,5 +1,6 @@
 import type { CanvasElement } from "@/types";
 import { useAIStore } from "@/stores/aiStore";
+import { callAI, type AICallOptions, type ChatMessage } from "@/lib/aiClient";
 
 /** AI 生成结果：展示文本 + 写入 store 的字段补丁 */
 export interface GenerationResult {
@@ -371,7 +372,7 @@ function produceTemplate(element: CanvasElement, prompt: string): GenerationResu
   }
 }
 
-/** 调用 OpenAI 兼容的 chat completions 接口 */
+/** 调用 OpenAI 兼容的 chat completions 接口（委托 aiClient.callAI，复用超时/取消/错误处理） */
 async function callOpenAI(element: CanvasElement, prompt: string): Promise<GenerationResult> {
   const systemPrompt = getSystemPrompt(element);
   const userMessage = buildUserMessage(element, prompt);
@@ -380,31 +381,19 @@ async function callOpenAI(element: CanvasElement, prompt: string): Promise<Gener
   if (!config) {
     throw new Error("AI 未配置，请在设置中填写 API Key");
   }
-  const baseUrl = config.baseUrl?.replace(/\/$/, "") || "https://api.openai.com/v1";
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-      temperature: 0.8,
-    }),
-  });
+  const messages: ChatMessage[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userMessage },
+  ];
+  const options: AICallOptions = {
+    config,
+    messages,
+    temperature: 0.8,
+  };
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => res.statusText);
-    throw new Error(`AI 接口错误 ${res.status}: ${errText}`);
-  }
-
-  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-  const content = data.choices?.[0]?.message?.content ?? "";
+  const result = await callAI(options);
+  const content = result.content;
 
   const json = parseAIResponse(content);
   if (json) {

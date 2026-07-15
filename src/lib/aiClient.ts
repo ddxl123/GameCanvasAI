@@ -26,6 +26,104 @@ const TIMEOUT_STREAM = 300_000;
 /** 请求体大小上限（200KB） */
 const MAX_BODY_SIZE = 200_000;
 
+// ===== HTTP 错误语义分类 =====
+
+/** HTTP 错误语义分类 */
+export interface HttpErrorClass {
+  kind: "auth" | "quota" | "rateLimit" | "server" | "client" | "network";
+  /** 是否值得重试 */
+  retryable: boolean;
+  /** 建议重试延迟（ms），0 表示立即 */
+  retryAfterMs: number;
+  /** 用户可读描述 */
+  userMessage: string;
+}
+
+export function classifyHttpError(status: number, retryAfterHeader?: string | null): HttpErrorClass {
+  if (status === 401 || status === 403) {
+    return { kind: "auth", retryable: false, retryAfterMs: 0, userMessage: "API Key 无效或权限不足，请检查设置" };
+  }
+  if (status === 402) {
+    return { kind: "quota", retryable: false, retryAfterMs: 0, userMessage: "AI 服务余额不足，请充值或更换 Provider" };
+  }
+  if (status === 429) {
+    // 解析 Retry-After 头（秒），默认退避 1s/2s
+    const ra = retryAfterHeader ? parseInt(retryAfterHeader, 10) : NaN;
+    const baseMs = Number.isFinite(ra) && ra > 0 ? ra * 1000 : 1000;
+    return { kind: "rateLimit", retryable: true, retryAfterMs: baseMs, userMessage: "请求过于频繁，正在重试" };
+  }
+  if (status >= 500 && status < 600) {
+    return { kind: "server", retryable: true, retryAfterMs: 1000, userMessage: "AI 服务暂时不可用，正在重试" };
+  }
+  if (status === 400) {
+    return { kind: "client", retryable: false, retryAfterMs: 0, userMessage: "请求参数有误" };
+  }
+  return { kind: "network", retryable: false, retryAfterMs: 0, userMessage: "网络错误，请检查连接" };
+}
+
+/** 带限流退避的重试包装器（最多重试 2 次） */
+async function withRateLimitRetry(
+  fn: () => Promise<Response>,
+  getMaxRetry: () => number
+): Promise<Response> {
+  const maxRetry = getMaxRetry();
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetry; attempt++) {
+    try {
+      const res = await fn();
+      if (res.status === 429 && attempt < maxRetry) {
+        const retryAfter = res.headers.get("Retry-After");
+        const cls = classifyHttpError(429, retryAfter);
+        await new Promise((r) => setTimeout(r, cls.retryAfterMs * (attempt + 1)));
+        continue;
+      }
+      // 5xx 重试 1 次
+      if (res.status >= 500 && res.status < 600 && attempt < 1) {
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      return res;
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      if (attempt < maxRetry && !(e instanceof Error && e.name === "AbortError")) {
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      throw lastError;
+    }
+  }
+  throw lastError ?? new Error("重试次数耗尽");
+}
+
+/**
+ * 按字符数估算 token（约 4 字符/token）裁剪消息历史。
+ * 保留第一条 system 消息 + 末尾 keepRounds*2 条消息（user/assistant 成对）。
+ * @param messages 消息数组
+ * @param maxChars 字符上限（默认 80000，约 20k token）
+ * @param keepRounds 保留最近几轮对话（默认 6）
+ */
+export function trimMessages(
+  messages: ChatMessage[],
+  maxChars: number = 80000,
+  keepRounds: number = 6
+): ChatMessage[] {
+  if (messages.length === 0) return messages;
+  const totalChars = messages.reduce((s, m) => s + (typeof m.content === "string" ? m.content.length : 0), 0);
+  if (totalChars <= maxChars) return messages;
+
+  const result: ChatMessage[] = [];
+  // 保留首条 system
+  let start = 0;
+  if (messages[0]?.role === "system") {
+    result.push(messages[0]);
+    start = 1;
+  }
+  // 保留末尾 keepRounds*2 条
+  const tail = messages.slice(start).slice(-keepRounds * 2);
+  result.push(...tail);
+  return result;
+}
+
 // ===== 类型定义 =====
 
 export interface ChatMessage {
@@ -101,9 +199,9 @@ export interface StreamCallbacks {
 /**
  * 是否支持 Tool Calls。
  * DeepSeek / OpenAI / Claude / 通义千问 全系列支持。
- * 参考：https://api-docs.deepseek.com/guides/tool_calls
+ * 参考：https://api-docs.deepseek.com/zh-cn/guides/tool_calls
  */
-export function supportsFunctionCalling(
+export function supportsToolCalls(
   provider: AIProvider,
   model: string
 ): boolean {
@@ -207,7 +305,7 @@ function buildOpenAIBody(
 
   // 工具定义
   const canUseTools =
-    !!tools && tools.length > 0 && supportsFunctionCalling(config.key, config.model);
+    !!tools && tools.length > 0 && supportsToolCalls(config.key, config.model);
   if (canUseTools) {
     body.tools = tools;
     // tool_choice 策略：
@@ -374,23 +472,22 @@ async function streamOpenAIRound(
   const bodyStr = JSON.stringify(body);
   checkBodySize(bodyStr);
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: bodyStr,
-    signal: withTimeout(signal, TIMEOUT_STREAM),
-  });
+  const response = await withRateLimitRetry(
+    () => fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+      body: bodyStr,
+      signal: withTimeout(signal, TIMEOUT_STREAM),
+    }),
+    () => 2
+  );
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
-    const err = new Error(
-      `AI 请求失败 (${response.status}): ${errorText.slice(0, 200) || response.statusText}`
-    );
-    // 附加状态码，供降级逻辑判断
+    const cls = classifyHttpError(response.status, response.headers.get("Retry-After"));
+    const err = new Error(`${cls.userMessage} (${response.status}): ${errorText.slice(0, 200) || response.statusText}`);
     (err as Error & { status?: number }).status = response.status;
+    (err as Error & { errorKind?: string }).errorKind = cls.kind;
     throw err;
   }
 
@@ -673,21 +770,23 @@ async function callOpenAI(options: AICallOptions): Promise<StreamResult> {
   const bodyStr = JSON.stringify(body);
   checkBodySize(bodyStr);
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: bodyStr,
-    signal: withTimeout(signal, TIMEOUT_NON_STREAM),
-  });
+  const response = await withRateLimitRetry(
+    () => fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+      body: bodyStr,
+      signal: withTimeout(signal, TIMEOUT_NON_STREAM),
+    }),
+    () => 2
+  );
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
-    throw new Error(
-      `AI 请求失败 (${response.status}): ${errorText.slice(0, 200) || response.statusText}`
-    );
+    const cls = classifyHttpError(response.status, response.headers.get("Retry-After"));
+    const err = new Error(`${cls.userMessage} (${response.status}): ${errorText.slice(0, 200) || response.statusText}`);
+    (err as Error & { status?: number }).status = response.status;
+    (err as Error & { errorKind?: string }).errorKind = cls.kind;
+    throw err;
   }
 
   const data = await response.json();
